@@ -1,0 +1,5 @@
+anthropic>=0.49
+boto3>=1.38
+httpx>=0.27
+pydantic>=2.10
+python-dotenv>=1.1
