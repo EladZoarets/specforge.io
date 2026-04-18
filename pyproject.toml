@@ -12,7 +12,7 @@ packages = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["lambdas/orchestrator"]
+pythonpath = ["lambdas/orchestrator", "infra"]
 addopts = "--cov=lambdas/orchestrator --cov-report=term-missing"
 
 [tool.coverage.run]

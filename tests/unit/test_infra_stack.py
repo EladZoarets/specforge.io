@@ -1,11 +1,6 @@
 import aws_cdk as cdk
 import pytest
 from aws_cdk import assertions
-
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../infra"))
 from stacks.specforge_stack import SpecforgeStack
 
 

@@ -4,15 +4,24 @@ from typing import Any
 import aws_cdk as cdk
 from aws_cdk import (
     aws_apigatewayv2 as apigwv2,
+)
+from aws_cdk import (
     aws_cloudwatch as cw,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
     aws_s3 as s3,
+)
+from aws_cdk import (
     aws_ssm as ssm,
 )
 from aws_cdk.aws_apigatewayv2_integrations import HttpLambdaIntegration
 from constructs import Construct
-
 
 # CloudFormation does not support SecureString parameters. Sensitive params
 # (/specforge/jira_token, /specforge/webhook_secret, /specforge/anthropic_api_key)
@@ -36,6 +45,7 @@ class SpecforgeStack(cdk.Stack):
             versioned=True,
             encryption=s3.BucketEncryption.KMS_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )
 
