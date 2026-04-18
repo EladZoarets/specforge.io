@@ -34,13 +34,13 @@
 ---
 
 ### TASK-002 — Core Models (`core/models.py`)
-- [ ] `JiraStory` — id, title, description, acceptance_criteria, story_points
-- [ ] `AgentScore` — agent_name, score (0–10 validated), rationale, suggestions
-- [ ] `Phase1Result` — quality, ambiguity, complexity scores + composite_score + passed_gate
-- [ ] `Phase2Result` — architecture, api_design, edge_cases, testing_strategy sections
-- [ ] `SpecDocument` — story_id, phase1, phase2, spec_markdown, s3_key
-- [ ] `WebhookPayload` — issue_key, issue_summary, issue_description, project_key
-- [ ] Pydantic v2 field_validator: score must be 0–10
+- [x] `JiraStory` — id, title, description, acceptance_criteria, story_points
+- [x] `AgentScore` — agent_name, score (0–10 validated), rationale, suggestions
+- [x] `Phase1Result` — quality, ambiguity, complexity scores + composite_score + passed_gate
+- [x] `Phase2Result` — architecture, api_design, edge_cases, testing_strategy sections
+- [x] `SpecDocument` — story_id, phase1, phase2, spec_markdown, s3_key
+- [x] `WebhookPayload` — issue_key, issue_summary, issue_description, project_key
+- [x] Pydantic v2 field_validator: score must be 0–10
 
 **Complexity:** S | **Dependencies:** TASK-001
 
@@ -186,7 +186,7 @@
 | Task | Status | PR |
 |------|--------|----|
 | TASK-001 | ✅ done | — |
-| TASK-002 | ⬜ pending | — |
+| TASK-002 | ✅ done | — |
 | TASK-003 | ⬜ pending | — |
 | TASK-004 | ⬜ pending | — |
 | TASK-005 | ⬜ pending | — |
