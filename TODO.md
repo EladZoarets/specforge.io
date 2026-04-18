@@ -47,11 +47,11 @@
 ---
 
 ### TASK-003 — Config and SSM Service (`core/config.py`, `services/ssm_service.py`)
-- [ ] `Settings` dataclass — all required env vars, raises EnvironmentError listing all missing
-- [ ] `load_settings()` — reads from os.environ, fails fast
-- [ ] `SSMService` class — injectable boto3 client, get_parameter, put_parameter
-- [ ] `SSMError` domain exception
-- [ ] `tests/unit/test_config.py` — all vars present, one missing, multiple missing
+- [x] `Settings` dataclass — all required env vars, raises EnvironmentError listing all missing
+- [x] `load_settings()` — reads from os.environ, fails fast
+- [x] `SSMService` class — injectable boto3 client, get_parameter, put_parameter
+- [x] `SSMError` domain exception
+- [x] `tests/unit/test_config.py` — all vars present, one missing, multiple missing
 
 **Complexity:** S | **Dependencies:** TASK-001
 
@@ -187,7 +187,7 @@
 |------|--------|----|
 | TASK-001 | ✅ done | — |
 | TASK-002 | ✅ done | — |
-| TASK-003 | ⬜ pending | — |
+| TASK-003 | ✅ done | — |
 | TASK-004 | ⬜ pending | — |
 | TASK-005 | ⬜ pending | — |
 | TASK-006 | ⬜ pending | — |
