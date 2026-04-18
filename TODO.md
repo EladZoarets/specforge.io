@@ -21,37 +21,37 @@
 ## Tasks
 
 ### TASK-001 — Project Scaffold and Python Toolchain
-- [ ] `pyproject.toml` — pytest, pytest-cov, moto, anthropic, boto3, python-dotenv
-- [ ] `Makefile` — targets: `test`, `lint`, `deploy-dev`, `deploy-prod`, `bootstrap-ssm`
-- [ ] `.gitignore` — .env, __pycache__, cdk.out/, .venv/, dist/
-- [ ] `lambdas/orchestrator/requirements.txt`
-- [ ] `infra/requirements.txt`
-- [ ] `tests/conftest.py` — pytest fixtures, moto setup, env patching
-- [ ] All `__init__.py` files across every package
+- [x] `pyproject.toml` — pytest, pytest-cov, moto, anthropic, boto3, python-dotenv
+- [x] `Makefile` — targets: `test`, `lint`, `deploy-dev`, `deploy-prod`, `bootstrap-ssm`
+- [x] `.gitignore` — .env, __pycache__, cdk.out/, .venv/, dist/
+- [x] `lambdas/orchestrator/requirements.txt`
+- [x] `infra/requirements.txt`
+- [x] `tests/conftest.py` — pytest fixtures, moto setup, env patching
+- [x] All `__init__.py` files across every package
 
 **Complexity:** S | **Dependencies:** none
 
 ---
 
 ### TASK-002 — Core Models (`core/models.py`)
-- [ ] `JiraStory` — id, title, description, acceptance_criteria, story_points
-- [ ] `AgentScore` — agent_name, score (0–10 validated), rationale, suggestions
-- [ ] `Phase1Result` — quality, ambiguity, complexity scores + composite_score + passed_gate
-- [ ] `Phase2Result` — architecture, api_design, edge_cases, testing_strategy sections
-- [ ] `SpecDocument` — story_id, phase1, phase2, spec_markdown, s3_key
-- [ ] `WebhookPayload` — issue_key, issue_summary, issue_description, project_key
-- [ ] Pydantic v2 field_validator: score must be 0–10
+- [x] `JiraStory` — id, title, description, acceptance_criteria, story_points
+- [x] `AgentScore` — agent_name, score (0–10 validated), rationale, suggestions
+- [x] `Phase1Result` — quality, ambiguity, complexity scores + composite_score + passed_gate
+- [x] `Phase2Result` — architecture, api_design, edge_cases, testing_strategy sections
+- [x] `SpecDocument` — story_id, phase1, phase2, spec_markdown, s3_key
+- [x] `WebhookPayload` — issue_key, issue_summary, issue_description, project_key
+- [x] Pydantic v2 field_validator: score must be 0–10
 
 **Complexity:** S | **Dependencies:** TASK-001
 
 ---
 
 ### TASK-003 — Config and SSM Service (`core/config.py`, `services/ssm_service.py`)
-- [ ] `Settings` dataclass — all required env vars, raises EnvironmentError listing all missing
-- [ ] `load_settings()` — reads from os.environ, fails fast
-- [ ] `SSMService` class — injectable boto3 client, get_parameter, put_parameter
-- [ ] `SSMError` domain exception
-- [ ] `tests/unit/test_config.py` — all vars present, one missing, multiple missing
+- [x] `Settings` dataclass — all required env vars, raises EnvironmentError listing all missing
+- [x] `load_settings()` — reads from os.environ, fails fast
+- [x] `SSMService` class — injectable boto3 client, get_parameter, put_parameter
+- [x] `SSMError` domain exception
+- [x] `tests/unit/test_config.py` — all vars present, one missing, multiple missing
 
 **Complexity:** S | **Dependencies:** TASK-001
 
@@ -185,9 +185,9 @@
 
 | Task | Status | PR |
 |------|--------|----|
-| TASK-001 | ⬜ pending | — |
-| TASK-002 | ⬜ pending | — |
-| TASK-003 | ⬜ pending | — |
+| TASK-001 | ✅ done | — |
+| TASK-002 | ✅ done | — |
+| TASK-003 | ✅ done | — |
 | TASK-004 | ⬜ pending | — |
 | TASK-005 | ⬜ pending | — |
 | TASK-006 | ⬜ pending | — |
