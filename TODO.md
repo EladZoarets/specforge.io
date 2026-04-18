@@ -21,13 +21,13 @@
 ## Tasks
 
 ### TASK-001 — Project Scaffold and Python Toolchain
-- [ ] `pyproject.toml` — pytest, pytest-cov, moto, anthropic, boto3, python-dotenv
-- [ ] `Makefile` — targets: `test`, `lint`, `deploy-dev`, `deploy-prod`, `bootstrap-ssm`
-- [ ] `.gitignore` — .env, __pycache__, cdk.out/, .venv/, dist/
-- [ ] `lambdas/orchestrator/requirements.txt`
-- [ ] `infra/requirements.txt`
-- [ ] `tests/conftest.py` — pytest fixtures, moto setup, env patching
-- [ ] All `__init__.py` files across every package
+- [x] `pyproject.toml` — pytest, pytest-cov, moto, anthropic, boto3, python-dotenv
+- [x] `Makefile` — targets: `test`, `lint`, `deploy-dev`, `deploy-prod`, `bootstrap-ssm`
+- [x] `.gitignore` — .env, __pycache__, cdk.out/, .venv/, dist/
+- [x] `lambdas/orchestrator/requirements.txt`
+- [x] `infra/requirements.txt`
+- [x] `tests/conftest.py` — pytest fixtures, moto setup, env patching
+- [x] All `__init__.py` files across every package
 
 **Complexity:** S | **Dependencies:** none
 
@@ -185,7 +185,7 @@
 
 | Task | Status | PR |
 |------|--------|----|
-| TASK-001 | ⬜ pending | — |
+| TASK-001 | ✅ done | — |
 | TASK-002 | ⬜ pending | — |
 | TASK-003 | ⬜ pending | — |
 | TASK-004 | ⬜ pending | — |
