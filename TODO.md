@@ -58,10 +58,10 @@
 ---
 
 ### TASK-004 — Webhook Receiver and HMAC Validation (`core/webhook.py`)
-- [ ] `validate_signature(payload_body, signature_header, secret)` — hmac.compare_digest
-- [ ] `parse_webhook_body(body)` → `WebhookPayload`
-- [ ] `WebhookAuthError` (401) and `WebhookParseError` (400) exception types
-- [ ] `tests/unit/test_webhook.py` — valid sig, wrong sig, missing header, good body, missing key
+- [x] `validate_signature(payload_body, signature_header, secret)` — hmac.compare_digest
+- [x] `parse_webhook_body(body)` → `WebhookPayload`
+- [x] `WebhookAuthError` (401) and `WebhookParseError` (400) exception types
+- [x] `tests/unit/test_webhook.py` — valid sig, wrong sig, missing header, good body, missing key
 
 **Complexity:** S | **Dependencies:** TASK-002, TASK-003
 
@@ -188,7 +188,7 @@
 | TASK-001 | ✅ done | — |
 | TASK-002 | ✅ done | — |
 | TASK-003 | ✅ done | — |
-| TASK-004 | ⬜ pending | — |
+| TASK-004 | ✅ done | — |
 | TASK-005 | ⬜ pending | — |
 | TASK-006 | ⬜ pending | — |
 | TASK-007 | ⬜ pending | — |
