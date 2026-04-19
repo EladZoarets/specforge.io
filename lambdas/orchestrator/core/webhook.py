@@ -14,6 +14,8 @@ from pydantic import ValidationError
 
 from .models import WebhookPayload
 
+_MAX_BODY_BYTES = 1_048_576  # 1 MB — guard against payload DoS
+
 
 class WebhookAuthError(Exception):
     http_status: int = 401
@@ -41,7 +43,9 @@ def validate_signature(
     parts = signature_header.split("=", 1)
     if len(parts) != 2 or parts[0] != "sha256" or not parts[1]:
         raise WebhookAuthError("Malformed signature header")
-    provided_hex = parts[1]
+    # Normalise to lowercase so callers emitting uppercase hex (e.g. Bitbucket,
+    # custom proxies) are not silently rejected.
+    provided_hex = parts[1].lower()
     # Compute and compare (timing-safe)
     expected_hex = hmac.new(secret.encode(), payload_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected_hex, provided_hex):
@@ -55,11 +59,14 @@ def parse_webhook_body(body: str | bytes) -> WebhookPayload:
         WebhookParseError: if *body* is not valid UTF-8, not valid JSON, or
             does not satisfy the :class:`WebhookPayload` schema.
     """
-    if isinstance(body, bytes):
-        try:
-            body = body.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise WebhookParseError(f"Body is not valid UTF-8: {exc}") from exc
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    if len(body) > _MAX_BODY_BYTES:
+        raise WebhookParseError(f"Body exceeds maximum size of {_MAX_BODY_BYTES} bytes")
+    try:
+        body = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WebhookParseError(f"Body is not valid UTF-8: {exc}") from exc
     try:
         data = json.loads(body)
     except json.JSONDecodeError as exc:

@@ -15,6 +15,7 @@ import pytest
 from core.webhook import (
     WebhookAuthError,
     WebhookParseError,
+    _MAX_BODY_BYTES,
     parse_webhook_body,
     validate_signature,
 )
@@ -167,3 +168,30 @@ def test_webhook_auth_error_http_status() -> None:
 def test_webhook_parse_error_http_status() -> None:
     """WebhookParseError must carry http_status == 400."""
     assert WebhookParseError.http_status == 400
+
+
+# ---------------------------------------------------------------------------
+# Fixes: uppercase hex and payload size guard
+# ---------------------------------------------------------------------------
+
+
+def test_uppercase_hex_signature_passes() -> None:
+    """Uppercase hex in sha256= header must be accepted (normalised to lowercase)."""
+    sig = _sig(VALID_BODY).replace("sha256=", "sha256=").upper()
+    # Reconstruct with correct prefix casing
+    hex_part = hmac.new(SECRET.encode(), VALID_BODY, hashlib.sha256).hexdigest().upper()
+    validate_signature(VALID_BODY, f"sha256={hex_part}", SECRET)  # must not raise
+
+
+def test_body_too_large_bytes_raises() -> None:
+    """A bytes body larger than _MAX_BODY_BYTES must raise WebhookParseError."""
+    oversized = b"x" * (_MAX_BODY_BYTES + 1)
+    with pytest.raises(WebhookParseError, match="exceeds maximum size"):
+        parse_webhook_body(oversized)
+
+
+def test_body_too_large_str_raises() -> None:
+    """A str body larger than _MAX_BODY_BYTES must also raise WebhookParseError."""
+    oversized = "x" * (_MAX_BODY_BYTES + 1)
+    with pytest.raises(WebhookParseError, match="exceeds maximum size"):
+        parse_webhook_body(oversized)
