@@ -1,5 +1,6 @@
 from .config import Settings, load_settings
 from .models import JiraStory, AgentScore, Phase1Result, Phase2Result, SpecDocument, WebhookPayload
+from .scoring import build_phase1_result, compute_composite, evaluate_gate
 from .webhook import WebhookAuthError, WebhookParseError, validate_signature, parse_webhook_body
 
 __all__ = [
@@ -11,6 +12,9 @@ __all__ = [
     "Phase2Result",
     "SpecDocument",
     "WebhookPayload",
+    "compute_composite",
+    "evaluate_gate",
+    "build_phase1_result",
     "WebhookAuthError",
     "WebhookParseError",
     "validate_signature",

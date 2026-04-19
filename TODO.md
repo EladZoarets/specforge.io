@@ -157,16 +157,16 @@
 ---
 
 ### TASK-013 — CDK Infra Stack
-- [ ] `infra/app.py` — CDK entry point
-- [ ] `infra/cdk.json` — app: "python app.py"
-- [ ] `infra/stacks/specforge_stack.py`:
-  - [ ] Lambda (Python 3.12, 5 min timeout, 1024 MB)
-  - [ ] API Gateway HTTP API — POST /webhook route
-  - [ ] S3 bucket (versioned, private, SSE-KMS)
-  - [ ] SSM parameters (PLACEHOLDER values)
-  - [ ] IAM role: ssm:GetParameter on /specforge/*, s3:PutObject+GetObject on spec bucket
-  - [ ] CloudWatch alarm: error rate > 5% over 5 min
-- [ ] `cdk synth` exits 0
+- [x] `infra/app.py` — CDK entry point
+- [x] `infra/cdk.json` — app: "python app.py"
+- [x] `infra/stacks/specforge_stack.py`:
+  - [x] Lambda (Python 3.12, 5 min timeout, 1024 MB)
+  - [x] API Gateway HTTP API — POST /webhook route
+  - [x] S3 bucket (versioned, private, SSE-KMS)
+  - [x] SSM parameters (PLACEHOLDER values)
+  - [x] IAM role: ssm:GetParameter on /specforge/*, s3:PutObject+GetObject on spec bucket
+  - [x] CloudWatch alarm: error rate > 5% over 5 min
+- [x] `cdk synth` exits 0
 
 **Complexity:** M | **Dependencies:** TASK-001
 
@@ -197,5 +197,5 @@
 | TASK-010 | ⬜ pending | — |
 | TASK-011 | ⬜ pending | — |
 | TASK-012 | ⬜ pending | — |
-| TASK-013 | ⬜ pending | — |
+| TASK-013 | ✅ done | #1 |
 | TASK-014 | ⬜ pending | — |
