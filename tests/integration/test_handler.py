@@ -463,9 +463,9 @@ def test_oversized_base64_body_rejected_before_hmac(handler_module):
     any HMAC check runs — otherwise a malicious sender can OOM the Lambda
     with ``base64.b64decode`` prior to the size check in parse_webhook_body.
     """
-    from core.webhook import _MAX_BODY_BYTES
+    from core.webhook import MAX_BODY_BYTES
 
-    oversized = "A" * (2 * _MAX_BODY_BYTES + 1)
+    oversized = "A" * (2 * MAX_BODY_BYTES + 1)
     event = {
         "body": oversized,
         "headers": {"x-hub-signature-256": "sha256=deadbeef"},
@@ -486,10 +486,10 @@ def test_oversized_base64_body_rejected_before_hmac(handler_module):
 
 
 def test_oversized_raw_body_rejected(handler_module):
-    """Raw (non-b64) body over ``_MAX_BODY_BYTES`` also rejected → 400."""
-    from core.webhook import _MAX_BODY_BYTES
+    """Raw (non-b64) body over ``MAX_BODY_BYTES`` also rejected → 400."""
+    from core.webhook import MAX_BODY_BYTES
 
-    oversized = "X" * (_MAX_BODY_BYTES + 1)
+    oversized = "X" * (MAX_BODY_BYTES + 1)
     event = {
         "body": oversized,
         "headers": {"x-hub-signature-256": "sha256=deadbeef"},
@@ -505,6 +505,33 @@ def test_oversized_raw_body_rejected(handler_module):
     assert body["error"] == "bad_request"
     assert "maximum size" in body["detail"]
     sig_mock.assert_not_called()
+
+
+def test_malformed_base64_body_returns_400(handler_module):
+    """Garbage base64 from the client must return 400, not 500.
+
+    ``base64.b64decode`` raises ``binascii.Error`` (a ``ValueError``
+    subclass) on invalid input. That exception must be trapped at
+    ``_extract_body`` and surfaced as a ``WebhookParseError`` → 400, not
+    leak out to the top-level ``except Exception`` as 500.
+    """
+    event = {
+        "body": "!!!not-base64!!!",
+        "headers": {"x-hub-signature-256": "sha256=deadbeef"},
+        "isBase64Encoded": True,
+    }
+
+    # Patch validate_signature to prove it was never called — the request
+    # failed at the decode step before HMAC ran.
+    sig_mock = MagicMock()
+    with patch.object(handler_module, "validate_signature", sig_mock):
+        resp = handler_module.lambda_handler(event, None)
+
+    assert resp["statusCode"] == 400
+    body = json.loads(resp["body"])
+    assert body["error"] == "bad_request"
+    assert "base64" in body["detail"]
+    assert sig_mock.call_count == 0
 
 
 # ---------------------------------------------------------------------------

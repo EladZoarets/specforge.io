@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 from typing import Any
@@ -44,7 +45,7 @@ from agents.phase2.testing_agent import TestingAgent
 from core.config import Settings, load_settings
 from core.models import JiraStory, Phase1Result, WebhookPayload
 from core.webhook import (
-    _MAX_BODY_BYTES,
+    MAX_BODY_BYTES,
     WebhookAuthError,
     WebhookParseError,
     parse_webhook_body,
@@ -97,22 +98,27 @@ def _extract_body(event: dict[str, Any]) -> bytes:
     Size-gates the *raw* input before any decoding so a huge base64 payload
     can't OOM the Lambda via ``base64.b64decode`` before HMAC/parse run.
     Raises ``WebhookParseError`` (→ HTTP 400) if the raw input exceeds the
-    cap. Base64 inflates ~33%, so the b64 cap is ``_MAX_BODY_BYTES * 2``
-    (conservative); raw bytes/str pass through at exactly ``_MAX_BODY_BYTES``.
+    cap or — for base64 input — if it isn't valid base64. Base64 inflates
+    ~33%, so the b64 cap is ``MAX_BODY_BYTES * 2`` (conservative); raw
+    bytes/str pass through at exactly ``MAX_BODY_BYTES``.
     """
     raw = event.get("body") or ""
     if event.get("isBase64Encoded"):
         # Cap the *source* string before decoding: b64 expansion is ~4/3, so
         # 2x is a safe upper bound that still admits any valid payload
-        # under the eventual _MAX_BODY_BYTES decoded limit.
-        if len(raw) > _MAX_BODY_BYTES * 2:
+        # under the eventual MAX_BODY_BYTES decoded limit.
+        if len(raw) > MAX_BODY_BYTES * 2:
             raise WebhookParseError("Body exceeds maximum size")
-        return base64.b64decode(raw)
+        try:
+            return base64.b64decode(raw)
+        except (binascii.Error, ValueError) as exc:
+            # Garbage base64 from the client is a 400, not a 500.
+            raise WebhookParseError("Body is not valid base64") from exc
     if isinstance(raw, bytes):
-        if len(raw) > _MAX_BODY_BYTES:
+        if len(raw) > MAX_BODY_BYTES:
             raise WebhookParseError("Body exceeds maximum size")
         return raw
-    if len(raw) > _MAX_BODY_BYTES:
+    if len(raw) > MAX_BODY_BYTES:
         raise WebhookParseError("Body exceeds maximum size")
     return raw.encode("utf-8")
 
