@@ -23,6 +23,7 @@ def base_env(monkeypatch):
     monkeypatch.setenv("JIRA_USER_EMAIL", "test@example.com")
     monkeypatch.setenv("S3_BUCKET", "test-specforge-bucket")
     monkeypatch.setenv("WEBHOOK_SECRET", "test-webhook-secret")
+    monkeypatch.setenv("QUALITY_THRESHOLD", "7.0")
 
 
 @pytest.fixture
