@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from .models import WebhookPayload
 
-_MAX_BODY_BYTES = 1_048_576  # 1 MB — guard against payload DoS
+MAX_BODY_BYTES = 1_048_576  # 1 MB — guard against payload DoS
 
 
 class WebhookAuthError(Exception):
@@ -61,8 +61,8 @@ def parse_webhook_body(body: str | bytes) -> WebhookPayload:
     """
     if isinstance(body, str):
         body = body.encode("utf-8")
-    if len(body) > _MAX_BODY_BYTES:
-        raise WebhookParseError(f"Body exceeds maximum size of {_MAX_BODY_BYTES} bytes")
+    if len(body) > MAX_BODY_BYTES:
+        raise WebhookParseError(f"Body exceeds maximum size of {MAX_BODY_BYTES} bytes")
     try:
         body = body.decode("utf-8")
     except UnicodeDecodeError as exc:

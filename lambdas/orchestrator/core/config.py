@@ -10,6 +10,7 @@ _REQUIRED_VARS = (
     "JIRA_USER_EMAIL",
     "S3_BUCKET",
     "WEBHOOK_SECRET",
+    "QUALITY_THRESHOLD",
 )
 
 
@@ -21,6 +22,7 @@ class Settings:
     jira_user_email: str
     s3_bucket: str
     webhook_secret: str
+    quality_threshold: float
 
 
 def load_settings() -> Settings:
@@ -29,6 +31,12 @@ def load_settings() -> Settings:
         raise EnvironmentError(
             f"Missing required environment variables: {', '.join(missing)}"
         )
+    try:
+        quality_threshold = float(os.environ["QUALITY_THRESHOLD"])
+    except ValueError as exc:
+        raise EnvironmentError(
+            f"QUALITY_THRESHOLD must be a float, got {os.environ['QUALITY_THRESHOLD']!r}"
+        ) from exc
     return Settings(
         anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         jira_base_url=os.environ["JIRA_BASE_URL"],
@@ -36,4 +44,5 @@ def load_settings() -> Settings:
         jira_user_email=os.environ["JIRA_USER_EMAIL"],
         s3_bucket=os.environ["S3_BUCKET"],
         webhook_secret=os.environ["WEBHOOK_SECRET"],
+        quality_threshold=quality_threshold,
     )

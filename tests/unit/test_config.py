@@ -9,6 +9,7 @@ _ALL_VARS = {
     "JIRA_USER_EMAIL": "test@example.com",
     "S3_BUCKET": "test-bucket",
     "WEBHOOK_SECRET": "test-secret",
+    "QUALITY_THRESHOLD": "7.0",
 }
 
 
