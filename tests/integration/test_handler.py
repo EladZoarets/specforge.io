@@ -105,9 +105,19 @@ def _phase2_result() -> Phase2Result:
 
 @pytest.fixture
 def handler_module(base_env, s3_client):  # noqa: ARG001 — fixtures for side effects
-    """Import (or reload) ``handler`` with env vars + S3 bucket in place."""
+    """Import (or reload) ``handler`` with env vars + S3 bucket in place.
+
+    Patches ``SSMService`` to raise on construction so module-init takes the
+    "SSM unreachable → env fallback" branch. This mirrors local dev and
+    mid-tier test behavior (no IAM role, no SSM parameters) and keeps the
+    existing 400/401/500 wiring tests focused on request handling rather
+    than settings loading. Tests that need a specific SSM outcome (e.g.
+    ``test_module_init_prefers_ssm_over_env``) do their own import + patch.
+    """
     sys.modules.pop("handler", None)
-    module = importlib.import_module("handler")
+    ssm_unreachable = MagicMock(side_effect=RuntimeError("SSM unreachable in test"))
+    with patch("services.ssm_service.SSMService", ssm_unreachable):
+        module = importlib.import_module("handler")
     yield module
     sys.modules.pop("handler", None)
 
@@ -590,6 +600,158 @@ def test_anthropic_client_closed_on_happy_path(handler_module):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 14. Module init prefers SSM over env when both are available
+# ---------------------------------------------------------------------------
+
+
+_GOOD_SSM_VALUES = {
+    "/specforge/anthropic_api_key": "ssm-anthropic-key",
+    "/specforge/jira_url": "https://ssm.atlassian.net",
+    "/specforge/jira_email": "ssm@example.com",
+    "/specforge/jira_api_token": "ssm-jira-token",
+    "/specforge/s3_bucket": "test-specforge-bucket",  # must exist in moto
+    "/specforge/webhook_secret": "ssm-webhook-secret",
+    "/specforge/quality_threshold": "8.25",
+}
+
+
+def _fake_ssm(values: dict[str, str]) -> MagicMock:
+    """Build a MagicMock SSMService whose get_parameter_if_exists returns
+    canned values, mirroring real SSM (None on ParameterNotFound).
+    """
+    instance = MagicMock()
+    instance.get_parameter_if_exists = MagicMock(side_effect=lambda name: values.get(name))
+    return instance
+
+
+def test_module_init_prefers_ssm_over_env(base_env, s3_client):  # noqa: ARG001
+    """When SSMService successfully returns canned values, module init must
+    use them — not fall back to env vars, even though ``base_env`` provides
+    env values. The env fallback is only meant to fire when SSM fails.
+    """
+    fake_ssm_instance = _fake_ssm(_GOOD_SSM_VALUES)
+    ssm_ctor = MagicMock(return_value=fake_ssm_instance)
+
+    # Patch at the module under test's import site so module-init uses our mock.
+    sys.modules.pop("handler", None)
+    with patch("services.ssm_service.SSMService", ssm_ctor):
+        module = importlib.import_module("handler")
+    try:
+        assert module._INIT_ERROR is None
+        assert module._SETTINGS is not None
+        # Settings came from SSM, not env:
+        assert module._SETTINGS.anthropic_api_key == "ssm-anthropic-key"
+        assert module._SETTINGS.jira_base_url == "https://ssm.atlassian.net"
+        assert module._SETTINGS.jira_user_email == "ssm@example.com"
+        assert module._SETTINGS.jira_token == "ssm-jira-token"
+        assert module._SETTINGS.webhook_secret == "ssm-webhook-secret"
+        assert module._SETTINGS.quality_threshold == 8.25
+        # SSMService was constructed and retained for testability.
+        assert module._SSM_SERVICE is fake_ssm_instance
+        ssm_ctor.assert_called_once()
+        # All 7 parameters fetched exactly once.
+        assert fake_ssm_instance.get_parameter_if_exists.call_count == 7
+    finally:
+        sys.modules.pop("handler", None)
+
+
+def test_module_init_uses_ssm_when_env_absent(monkeypatch, s3_client):  # noqa: ARG001
+    """Production scenario: the Lambda environment does NOT inject any of the
+    seven config env vars; SSM is the sole source of truth. Module init
+    must succeed on SSM alone.
+    """
+    # Scrub env of every required var so the env fallback would fail if
+    # SSM-as-sole-source didn't work.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "JIRA_BASE_URL",
+        "JIRA_TOKEN",
+        "JIRA_USER_EMAIL",
+        "S3_BUCKET",
+        "WEBHOOK_SECRET",
+        "QUALITY_THRESHOLD",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    fake_ssm_instance = _fake_ssm(_GOOD_SSM_VALUES)
+    ssm_ctor = MagicMock(return_value=fake_ssm_instance)
+
+    sys.modules.pop("handler", None)
+    with patch("services.ssm_service.SSMService", ssm_ctor):
+        module = importlib.import_module("handler")
+    try:
+        assert module._INIT_ERROR is None
+        assert module._SETTINGS is not None
+        assert module._SETTINGS.anthropic_api_key == "ssm-anthropic-key"
+        assert module._SETTINGS.webhook_secret == "ssm-webhook-secret"
+        assert module._SETTINGS.quality_threshold == 8.25
+        assert fake_ssm_instance.get_parameter_if_exists.call_count == 7
+    finally:
+        sys.modules.pop("handler", None)
+
+
+def test_partial_ssm_config_does_not_fall_back_to_env(base_env, s3_client):  # noqa: ARG001
+    """``base_env`` is active (so the env fallback *would* succeed), but SSM
+    returns 6-of-7 parameters (one ParameterNotFound). This is operator
+    error — the handler must NOT silently fall back to env creds; it must
+    set ``_INIT_ERROR`` to a :class:`PartialSSMConfig` and refuse service.
+    """
+    # One parameter intentionally omitted so get_parameter_if_exists returns
+    # None for it (mirrors ParameterNotFound).
+    partial_values = dict(_GOOD_SSM_VALUES)
+    del partial_values["/specforge/webhook_secret"]
+
+    fake_ssm_instance = _fake_ssm(partial_values)
+    ssm_ctor = MagicMock(return_value=fake_ssm_instance)
+
+    sys.modules.pop("handler", None)
+    with patch("services.ssm_service.SSMService", ssm_ctor):
+        module = importlib.import_module("handler")
+    try:
+        from core.config import PartialSSMConfig
+
+        # Hard fail, NOT a silent env fallback.
+        assert module._SETTINGS is None
+        assert isinstance(module._INIT_ERROR, PartialSSMConfig)
+        assert "webhook_secret" in str(module._INIT_ERROR)
+
+        # And every invocation returns 500 (no service until SSM is fixed).
+        resp = module.lambda_handler(_event(_valid_body()), None)
+        assert resp["statusCode"] == 500
+    finally:
+        sys.modules.pop("handler", None)
+
+
+def test_ssm_unavailable_falls_back_to_env(base_env, s3_client):  # noqa: ARG001
+    """When ``SSMService()`` itself fails to construct (no creds / boto init
+    error / network dead), that's a genuine reachability failure — fall
+    back to env vars cleanly. ``_SETTINGS`` must be populated from env.
+    """
+    class _BoomSSM(BaseException):
+        pass
+
+    ssm_ctor = MagicMock(side_effect=_BoomSSM("boto client init failed"))
+
+    sys.modules.pop("handler", None)
+    with patch("services.ssm_service.SSMService", ssm_ctor):
+        module = importlib.import_module("handler")
+    try:
+        # Env fallback took over.
+        assert module._INIT_ERROR is None
+        assert module._SETTINGS is not None
+        # Values came from ``base_env``, not SSM.
+        assert module._SETTINGS.anthropic_api_key == "test-anthropic-key"
+        assert module._SETTINGS.webhook_secret == "test-webhook-secret"
+    finally:
+        sys.modules.pop("handler", None)
+
+
+# ---------------------------------------------------------------------------
+# 15. S3 service reuse across warm invocations
+# ---------------------------------------------------------------------------
+
+
 def test_s3_service_module_scoped_reused_across_invocations(base_env, s3_client):  # noqa: ARG001
     """The S3Service instance is constructed once at module import and
     reused across warm invocations. Construction cost (~150ms) must not
@@ -606,8 +768,14 @@ def test_s3_service_module_scoped_reused_across_invocations(base_env, s3_client)
     s3_ctor = MagicMock(return_value=s3_instance)
 
     # Patch S3Service *before* import so the module-level construction uses
-    # our mock exactly once.
-    with patch("services.s3_service.S3Service", s3_ctor):
+    # our mock exactly once. Also force SSM to be unreachable so module-init
+    # takes the env-fallback path (this test targets S3 reuse, not settings
+    # loading).
+    ssm_unreachable = MagicMock(side_effect=RuntimeError("SSM unreachable in test"))
+    with (
+        patch("services.s3_service.S3Service", s3_ctor),
+        patch("services.ssm_service.SSMService", ssm_unreachable),
+    ):
         module = importlib.import_module("handler")
     try:
         phase1 = _pass_phase1()

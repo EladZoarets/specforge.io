@@ -25,6 +25,31 @@ def test_get_parameter_not_found_raises_ssm_error(ssm):
         ssm.get_parameter("/specforge/missing")
 
 
+def test_get_parameter_if_exists_returns_value(ssm):
+    ssm.put_parameter("/specforge/present", "the-value")
+    assert ssm.get_parameter_if_exists("/specforge/present") == "the-value"
+
+
+def test_get_parameter_if_exists_returns_none_on_parameter_not_found(ssm):
+    # Must NOT raise — caller uses None to distinguish "missing" from
+    # "SSM broken".
+    assert ssm.get_parameter_if_exists("/specforge/nope") is None
+
+
+def test_get_parameter_if_exists_raises_ssm_error_on_other_client_errors(ssm):
+    """Non-ParameterNotFound ClientErrors (AccessDenied, InternalError,
+    network issues, etc.) MUST surface as :class:`SSMError` — they're
+    reachability errors, not "missing parameter".
+    """
+    other_error = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+        "GetParameter",
+    )
+    with patch.object(ssm._client, "get_parameter", side_effect=other_error):
+        with pytest.raises(SSMError, match="/specforge/secret"):
+            ssm.get_parameter_if_exists("/specforge/secret")
+
+
 def test_put_parameter_overwrite_false_raises_ssm_error(ssm):
     ssm.put_parameter("/specforge/dup", "first")
     with pytest.raises(SSMError, match="'/specforge/dup'"):

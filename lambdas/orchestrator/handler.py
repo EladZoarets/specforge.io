@@ -42,7 +42,12 @@ from agents.phase2.api_agent import ApiAgent
 from agents.phase2.architecture_agent import ArchitectureAgent
 from agents.phase2.edge_cases_agent import EdgeCasesAgent
 from agents.phase2.testing_agent import TestingAgent
-from core.config import Settings, load_settings
+from core.config import (
+    PartialSSMConfig,
+    Settings,
+    load_settings,
+    load_settings_from_ssm,
+)
 from core.models import JiraStory, Phase1Result, WebhookPayload
 from core.webhook import (
     MAX_BODY_BYTES,
@@ -56,6 +61,7 @@ from pipeline.phase2 import Phase2PipelineError, run_phase2
 from pipeline.writer import assemble_spec
 from services.jira_service import JiraAPIError, JiraService
 from services.s3_service import S3PresignError, S3Service, S3UploadError
+from services.ssm_service import SSMService
 
 logger = logging.getLogger()
 if not logger.handlers:
@@ -67,15 +73,49 @@ _SETTINGS: Settings | None = None
 # (~150 ms on cold start) out of the per-invocation path. JiraService, by
 # contrast, owns the httpx.AsyncClient and stays per-invocation.
 _S3_SERVICE: S3Service | None = None
+# SSMService is held at module scope for testability even though the handler
+# doesn't use it after init. A reference here lets tests reload the module
+# and inspect how settings were sourced.
+_SSM_SERVICE: SSMService | None = None
 _INIT_ERROR: BaseException | None = None
 
+# Preferred path: load settings from SSM (production Lambda, where the IAM
+# role grants ssm:GetParameter on /specforge/* and no env vars are injected).
+#
+# Two distinct failure modes, two distinct responses:
+#
+# * ``PartialSSMConfig`` — SSM is reachable, but the operator left a
+#   parameter missing/blank/unparseable. Hard fail. We specifically do NOT
+#   fall back to env vars here: stale env would mask the misconfiguration
+#   and hand the operator a silent-wrong-creds footgun. Set ``_INIT_ERROR``
+#   and serve 500s until the operator fixes SSM.
+# * Anything else (boto init, no creds, network, access denied, etc.) —
+#   SSM is genuinely unreachable. Fall back to env-var loading. This is
+#   what keeps the existing ``base_env`` fixture (and local ``make run``)
+#   working without changes.
 try:
-    _SETTINGS = load_settings()
-    _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
-except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
-    # Lambda doesn't hard-crash on import; handler surfaces it as 500.
+    _SSM_SERVICE = SSMService()
+    _SETTINGS = load_settings_from_ssm(_SSM_SERVICE)
+except PartialSSMConfig as _exc:
+    # SSM is reachable but misconfigured — refuse env fallback.
     _INIT_ERROR = _exc
-    logger.exception("Module-level initialization failed: %s", _exc)
+    logger.exception(
+        "SSM config is partial/invalid — refusing env fallback: %s", _exc
+    )
+except BaseException as _ssm_exc:  # noqa: BLE001 — broad: SSM can fail many ways
+    logger.info(
+        "SSM settings load failed (%s); falling back to env vars", _ssm_exc
+    )
+    try:
+        _SETTINGS = load_settings()
+    except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
+        # Lambda doesn't hard-crash on import; handler surfaces it as 500.
+        _INIT_ERROR = _exc
+        logger.exception("Module-level initialization failed: %s", _exc)
+    else:
+        _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
+else:
+    _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
 
 
 # ---------------------------------------------------------------------------

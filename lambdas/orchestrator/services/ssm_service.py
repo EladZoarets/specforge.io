@@ -24,6 +24,27 @@ class SSMService:
         except ClientError as exc:
             raise SSMError(f"Failed to get parameter {name!r}: {exc}") from exc
 
+    def get_parameter_if_exists(
+        self, name: str, *, with_decryption: bool = True
+    ) -> str | None:
+        """Return the parameter value, or ``None`` if it does not exist.
+
+        Distinguishes "parameter genuinely missing" (``ParameterNotFound``) from
+        "SSM is unreachable / denied / otherwise broken". Callers that must
+        treat a missing parameter as an operator-facing config error (rather
+        than a reachability error) use this helper so they can branch on
+        ``None`` without catching :class:`SSMError` — the latter is reserved
+        for underlying service/client failures that should trigger fallback.
+        """
+        try:
+            response = self._client.get_parameter(Name=name, WithDecryption=with_decryption)
+            return response["Parameter"]["Value"]
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ParameterNotFound":
+                return None
+            raise SSMError(f"Failed to get parameter {name!r}: {exc}") from exc
+
     def put_parameter(self, name: str, value: str, *, overwrite: bool = False) -> None:
         try:
             self._client.put_parameter(
