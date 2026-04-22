@@ -590,6 +590,60 @@ def test_anthropic_client_closed_on_happy_path(handler_module):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 14. Module init prefers SSM over env when both are available
+# ---------------------------------------------------------------------------
+
+
+def test_module_init_prefers_ssm_over_env(base_env, s3_client):  # noqa: ARG001
+    """When SSMService successfully returns canned values, module init must
+    use them — not fall back to env vars, even though ``base_env`` provides
+    env values. The env fallback is only meant to fire when SSM fails.
+    """
+    # Canned SSM values — deliberately different from the env vars in
+    # ``base_env`` so we can tell which source wound up in ``_SETTINGS``.
+    ssm_values = {
+        "/specforge/anthropic_api_key": "ssm-anthropic-key",
+        "/specforge/jira_url": "https://ssm.atlassian.net",
+        "/specforge/jira_email": "ssm@example.com",
+        "/specforge/jira_api_token": "ssm-jira-token",
+        "/specforge/s3_bucket": "test-specforge-bucket",  # must exist in moto
+        "/specforge/webhook_secret": "ssm-webhook-secret",
+        "/specforge/quality_threshold": "8.25",
+    }
+
+    fake_ssm_instance = MagicMock()
+    fake_ssm_instance.get_parameter = MagicMock(side_effect=lambda name: ssm_values[name])
+    ssm_ctor = MagicMock(return_value=fake_ssm_instance)
+
+    # Patch at the module under test's import site so module-init uses our mock.
+    sys.modules.pop("handler", None)
+    with patch("services.ssm_service.SSMService", ssm_ctor):
+        module = importlib.import_module("handler")
+    try:
+        assert module._INIT_ERROR is None
+        assert module._SETTINGS is not None
+        # Settings came from SSM, not env:
+        assert module._SETTINGS.anthropic_api_key == "ssm-anthropic-key"
+        assert module._SETTINGS.jira_base_url == "https://ssm.atlassian.net"
+        assert module._SETTINGS.jira_user_email == "ssm@example.com"
+        assert module._SETTINGS.jira_token == "ssm-jira-token"
+        assert module._SETTINGS.webhook_secret == "ssm-webhook-secret"
+        assert module._SETTINGS.quality_threshold == 8.25
+        # SSMService was constructed and retained for testability.
+        assert module._SSM_SERVICE is fake_ssm_instance
+        ssm_ctor.assert_called_once()
+        # All 7 parameters fetched exactly once.
+        assert fake_ssm_instance.get_parameter.call_count == 7
+    finally:
+        sys.modules.pop("handler", None)
+
+
+# ---------------------------------------------------------------------------
+# 15. S3 service reuse across warm invocations
+# ---------------------------------------------------------------------------
+
+
 def test_s3_service_module_scoped_reused_across_invocations(base_env, s3_client):  # noqa: ARG001
     """The S3Service instance is constructed once at module import and
     reused across warm invocations. Construction cost (~150ms) must not

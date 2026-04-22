@@ -42,7 +42,7 @@ from agents.phase2.api_agent import ApiAgent
 from agents.phase2.architecture_agent import ArchitectureAgent
 from agents.phase2.edge_cases_agent import EdgeCasesAgent
 from agents.phase2.testing_agent import TestingAgent
-from core.config import Settings, load_settings
+from core.config import Settings, load_settings, load_settings_from_ssm
 from core.models import JiraStory, Phase1Result, WebhookPayload
 from core.webhook import (
     MAX_BODY_BYTES,
@@ -56,6 +56,7 @@ from pipeline.phase2 import Phase2PipelineError, run_phase2
 from pipeline.writer import assemble_spec
 from services.jira_service import JiraAPIError, JiraService
 from services.s3_service import S3PresignError, S3Service, S3UploadError
+from services.ssm_service import SSMService
 
 logger = logging.getLogger()
 if not logger.handlers:
@@ -67,15 +68,35 @@ _SETTINGS: Settings | None = None
 # (~150 ms on cold start) out of the per-invocation path. JiraService, by
 # contrast, owns the httpx.AsyncClient and stays per-invocation.
 _S3_SERVICE: S3Service | None = None
+# SSMService is held at module scope for testability even though the handler
+# doesn't use it after init. A reference here lets tests reload the module
+# and inspect how settings were sourced.
+_SSM_SERVICE: SSMService | None = None
 _INIT_ERROR: BaseException | None = None
 
+# Preferred path: load settings from SSM (production Lambda, where the IAM
+# role grants ssm:GetParameter on /specforge/* and no env vars are injected).
+# Fallback path: if SSMService init or fetch fails — e.g. in local dev and
+# pytest where boto3 has no credentials or the parameters aren't populated —
+# fall back to env-var loading. The env fallback is what keeps the existing
+# ``base_env`` fixture (and local ``make run``) working without changes.
 try:
-    _SETTINGS = load_settings()
+    _SSM_SERVICE = SSMService()
+    _SETTINGS = load_settings_from_ssm(_SSM_SERVICE)
+except BaseException as _ssm_exc:  # noqa: BLE001 — broad: SSM can fail many ways
+    logger.info(
+        "SSM settings load failed (%s); falling back to env vars", _ssm_exc
+    )
+    try:
+        _SETTINGS = load_settings()
+    except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
+        # Lambda doesn't hard-crash on import; handler surfaces it as 500.
+        _INIT_ERROR = _exc
+        logger.exception("Module-level initialization failed: %s", _exc)
+    else:
+        _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
+else:
     _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
-except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
-    # Lambda doesn't hard-crash on import; handler surfaces it as 500.
-    _INIT_ERROR = _exc
-    logger.exception("Module-level initialization failed: %s", _exc)
 
 
 # ---------------------------------------------------------------------------
