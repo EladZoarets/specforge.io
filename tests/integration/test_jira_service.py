@@ -150,3 +150,98 @@ async def test_base_url_trailing_slash_is_normalized():
             svc = JiraService(BASE_URL + "/", EMAIL, TOKEN, client=client)
             await svc.post_comment("ABC-1", "hi")
         assert route.called
+
+
+@pytest.mark.asyncio
+async def test_issue_key_is_url_encoded_in_path():
+    # A malformed key containing "/" must be percent-encoded in the request
+    # path so it cannot route to an unintended sub-resource. We mock the
+    # ENCODED URL and assert respx sees the request there.
+    encoded_url = f"{BASE_URL}/rest/api/3/issue/ABC-1%2Fevil/comment"
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(encoded_url).mock(
+            return_value=httpx.Response(201, json={"id": "1"})
+        )
+        async with httpx.AsyncClient() as client:
+            svc = JiraService(BASE_URL, EMAIL, TOKEN, client=client)
+            await svc.post_comment("ABC-1/evil", "hi")
+        assert route.called
+        # Raw "/" in the key must not have reached the path.
+        assert "ABC-1/evil" not in str(route.calls.last.request.url)
+
+
+@pytest.mark.asyncio
+async def test_issue_key_is_url_encoded_in_attach_path():
+    encoded_url = f"{BASE_URL}/rest/api/3/issue/ABC-2%2Fevil/attachments"
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(encoded_url).mock(
+            return_value=httpx.Response(200, json=[{"id": "1"}])
+        )
+        async with httpx.AsyncClient() as client:
+            svc = JiraService(BASE_URL, EMAIL, TOKEN, client=client)
+            await svc.attach_file("ABC-2/evil", b"x", "spec.md")
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_error_body_containing_authorization_is_redacted():
+    # Jira error bodies can echo request metadata. If the body contains the
+    # literal substring "Authorization", the snippet must be replaced wholesale
+    # so no token fragment can leak via _body_snippet.
+    url = f"{BASE_URL}/rest/api/3/issue/ABC-1/comment"
+    leaky_body = "Bad request. Headers: Authorization: Basic xyz=="
+    with respx.mock() as router:
+        router.post(url).mock(
+            return_value=httpx.Response(400, text=leaky_body)
+        )
+        async with httpx.AsyncClient() as client:
+            svc = JiraService(BASE_URL, EMAIL, TOKEN, client=client)
+            with pytest.raises(JiraAPIError) as excinfo:
+                await svc.post_comment("ABC-1", "hi")
+    message = str(excinfo.value)
+    assert "400" in message
+    assert "<redacted body>" in message
+    # None of the echoed auth metadata should survive.
+    assert "Authorization" not in message
+    assert "Basic xyz" not in message
+
+
+@pytest.mark.asyncio
+async def test_aclose_does_not_close_injected_client():
+    # When the caller injects a client, lifecycle belongs to the caller.
+    async with httpx.AsyncClient() as client:
+        svc = JiraService(BASE_URL, EMAIL, TOKEN, client=client)
+        await svc.aclose()
+        assert client.is_closed is False
+    # After the async-with exits, the caller's client should be closed.
+    assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_constructor_created_client():
+    # When no client is injected, JiraService owns it and must close it.
+    svc = JiraService(BASE_URL, EMAIL, TOKEN)
+    client = svc._client
+    assert client.is_closed is False
+    await svc.aclose()
+    assert client.is_closed is True
+    # Idempotent: calling again is safe.
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_closes_owned_client():
+    async with JiraService(BASE_URL, EMAIL, TOKEN) as svc:
+        client = svc._client
+        assert client.is_closed is False
+    assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_does_not_close_injected_client():
+    async with httpx.AsyncClient() as client:
+        async with JiraService(BASE_URL, EMAIL, TOKEN, client=client) as svc:
+            assert svc._client is client
+        # Injected client still usable after svc exit.
+        assert client.is_closed is False
+    assert client.is_closed is True
