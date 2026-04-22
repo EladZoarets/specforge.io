@@ -9,7 +9,6 @@ shape as the real Phase 1 agents.
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 
 import pytest
@@ -165,21 +164,43 @@ async def test_empty_agents_dict_raises():
 
 @pytest.mark.asyncio
 async def test_agents_run_concurrently():
-    # Three 100ms sleeps serialized = 300ms; concurrent should be ~100ms.
-    # We assert "well under sum" to tolerate event-loop jitter.
-    sleep = 0.1
-    agents = _agents(
-        quality=_FakeAgent(_score("quality", 8.0), sleep=sleep),
-        ambiguity=_FakeAgent(_score("ambiguity", 7.0), sleep=sleep),
-        complexity=_FakeAgent(_score("complexity", 6.0), sleep=sleep),
+    # Deterministic concurrency proof: each agent increments a counter on
+    # entry and waits on a shared barrier. The barrier is released only when
+    # all three have entered — so if any agent were awaited serially, the
+    # barrier would never fire and the outer wait_for would time out. This
+    # replaces a wall-clock assertion that was flaky under loaded CI.
+    started = 0
+    barrier = asyncio.Event()
+
+    class _BarrierAgent:
+        def __init__(self, name: str) -> None:
+            self._name = name
+            self.call_count = 0
+
+        async def evaluate(self, story: JiraStory) -> AgentScore:  # noqa: ARG002
+            nonlocal started
+            self.call_count += 1
+            started += 1
+            if started == 3:
+                barrier.set()
+            await barrier.wait()
+            return _score(self._name, 8.0)
+
+    agents: dict[str, Any] = {
+        "quality": _BarrierAgent("quality"),
+        "ambiguity": _BarrierAgent("ambiguity"),
+        "complexity": _BarrierAgent("complexity"),
+    }
+
+    # 2s safety timeout: if agents run serially, the barrier never releases
+    # and wait_for raises TimeoutError — failing the test loudly instead of
+    # hanging the suite.
+    await asyncio.wait_for(
+        run_phase1(_story(), agents, threshold=7.0),
+        timeout=2.0,
     )
 
-    start = time.perf_counter()
-    await run_phase1(_story(), agents, threshold=7.0)
-    elapsed = time.perf_counter() - start
-
-    # Serial would be ~0.30s; concurrent ~0.10s. 0.20s gives comfortable margin.
-    assert elapsed < 0.2, f"expected concurrent execution, took {elapsed:.3f}s"
+    assert started == 3
     for agent in agents.values():
         assert agent.call_count == 1
 
@@ -195,3 +216,53 @@ async def test_unexpected_exception_is_wrapped():
     assert exc_info.value.agent_name is None
     assert "unexpected: RuntimeError" in str(exc_info.value)
     assert exc_info.value.__cause__ is cause
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_propagates_unwrapped():
+    # Lambda timeouts arrive as cancellation; wrapping CancelledError as a
+    # Phase1PipelineError would mask the shutdown signal. The pipeline must
+    # let it propagate so the caller can honor the deadline cleanly.
+    agents = _agents(quality=_RaisingAgent(asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_phase1(_story(), agents, threshold=7.0)
+
+
+@pytest.mark.asyncio
+async def test_none_agent_value_raises_before_dispatch():
+    ambiguity = _FakeAgent(_score("ambiguity", 7.0))
+    complexity = _FakeAgent(_score("complexity", 6.0))
+    agents: dict[str, Any] = {
+        "quality": None,
+        "ambiguity": ambiguity,
+        "complexity": complexity,
+    }
+
+    with pytest.raises(Phase1PipelineError) as exc_info:
+        await run_phase1(_story(), agents, threshold=7.0)
+
+    assert exc_info.value.agent_name == "quality"
+    assert "not callable" in str(exc_info.value)
+    # Validation fires before dispatch — no agent should have been awaited.
+    assert ambiguity.call_count == 0
+    assert complexity.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_evaluate_is_rejected_by_agent_validation():
+    # ``callable`` accepts a sync method, so this guards against the narrower
+    # case of None / missing attribute. A sync ``evaluate`` would still blow
+    # up at await time, but the key contract — reject agents with no
+    # callable ``evaluate`` at all — is covered here with an int sentinel.
+    agents: dict[str, Any] = {
+        "quality": _FakeAgent(_score("quality", 8.0)),
+        "ambiguity": 42,  # no ``evaluate`` attribute at all
+        "complexity": _FakeAgent(_score("complexity", 6.0)),
+    }
+
+    with pytest.raises(Phase1PipelineError) as exc_info:
+        await run_phase1(_story(), agents, threshold=7.0)
+
+    assert exc_info.value.agent_name == "ambiguity"
+    assert "not callable" in str(exc_info.value)
