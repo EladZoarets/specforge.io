@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from botocore.exceptions import ClientError
-from services.s3_service import S3Service, S3UploadError
+from botocore.exceptions import ClientError, EndpointConnectionError
+from services.s3_service import S3PresignError, S3Service, S3UploadError
 
 
 def _fixed_clock() -> datetime:
@@ -17,6 +17,10 @@ def _client_error(code: str, message: str = "boom") -> ClientError:
         {"Error": {"Code": code, "Message": message}},
         "PutObject",
     )
+
+
+def _endpoint_error() -> EndpointConnectionError:
+    return EndpointConnectionError(endpoint_url="https://s3.us-east-1.amazonaws.com")
 
 
 def test_upload_spec_places_object_at_expected_key(s3_client):
@@ -133,3 +137,105 @@ def test_no_retry_on_access_denied_is_wrapped_immediately():
 
     assert mock_client.put_object.call_count == 1
     assert excinfo.value.code == "AccessDenied"
+
+
+# --- story_id validation (Finding 1) ----------------------------------------
+
+def test_upload_spec_accepts_standard_story_id(s3_client):
+    svc = S3Service("test-specforge-bucket", client=s3_client, clock=_fixed_clock)
+
+    key = svc.upload_spec("SPEC-1", "# hi")
+
+    assert key == "specs/SPEC-1/2026-04-22/SPEC.md"
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "foo/bar",
+        "..",
+        "",
+        "SPÉC-1",
+        "SPEC",
+        "-1",
+        "SPEC-",
+        "SPEC 1",
+        "specs/../evil-1",
+    ],
+)
+def test_upload_spec_rejects_invalid_story_id(bad_id):
+    mock_client = MagicMock()
+    svc = S3Service(
+        "test-specforge-bucket",
+        client=mock_client,
+        clock=_fixed_clock,
+        sleep=lambda _s: None,
+    )
+
+    with pytest.raises(ValueError, match="Invalid story_id"):
+        svc.upload_spec(bad_id, "# hi")
+
+    # Validation must happen BEFORE any S3 call is issued.
+    assert mock_client.put_object.call_count == 0
+
+
+# --- BotoCoreError retry (Finding 2) ----------------------------------------
+
+def test_retries_botocore_network_error_then_succeeds():
+    mock_client = MagicMock()
+    mock_client.put_object.side_effect = [
+        _endpoint_error(),
+        _endpoint_error(),
+        {"ResponseMetadata": {"HTTPStatusCode": 200}},
+    ]
+    sleeps: list[float] = []
+    svc = S3Service(
+        "test-specforge-bucket",
+        client=mock_client,
+        clock=_fixed_clock,
+        sleep=sleeps.append,
+    )
+
+    key = svc.upload_spec("SPEC-1", "# hi")
+
+    assert key == "specs/SPEC-1/2026-04-22/SPEC.md"
+    assert mock_client.put_object.call_count == 3
+    assert sleeps == [0.1, 0.2]
+
+
+def test_persistent_botocore_network_error_wrapped_after_retries():
+    mock_client = MagicMock()
+    mock_client.put_object.side_effect = _endpoint_error()
+    sleeps: list[float] = []
+    svc = S3Service(
+        "test-specforge-bucket",
+        client=mock_client,
+        clock=_fixed_clock,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(S3UploadError) as excinfo:
+        svc.upload_spec("SPEC-1", "# hi")
+
+    assert mock_client.put_object.call_count == 3
+    assert sleeps == [0.1, 0.2]
+    assert excinfo.value.code == "EndpointConnectionError"
+
+
+# --- Presign error wrapping (Finding 3) -------------------------------------
+
+def test_presigned_url_wraps_client_error_as_s3_presign_error():
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+        "GetObject",
+    )
+    svc = S3Service("test-specforge-bucket", client=mock_client)
+
+    with pytest.raises(S3PresignError) as excinfo:
+        svc.generate_presigned_url("specs/SPEC-1/2026-04-22/SPEC.md")
+
+    assert excinfo.value.key == "specs/SPEC-1/2026-04-22/SPEC.md"
+    assert excinfo.value.code == "AccessDenied"
+    # Sibling of S3UploadError, not a parent — neither should be a subclass of the other.
+    assert not isinstance(excinfo.value, S3UploadError)
