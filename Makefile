@@ -15,4 +15,4 @@ deploy-prod:
 
 bootstrap-ssm:
 	@echo "Writing SSM placeholder parameters for specforge..."
-	PYTHONPATH=lambdas/orchestrator python scripts/bootstrap_ssm.py
+	PYTHONPATH=lambdas/orchestrator:$$PYTHONPATH python scripts/bootstrap_ssm.py

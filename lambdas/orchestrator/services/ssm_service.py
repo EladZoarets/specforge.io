@@ -44,8 +44,13 @@ class SSMService:
         """Bootstrap SSM parameters idempotently.
 
         For each (name, value) in ``agent_map``:
-          - ``overwrite=True``: always write the parameter.
+          - ``overwrite=True``: always write the parameter. Status reflects
+            whether the parameter existed before the write (``"overwritten"``)
+            or was freshly created (``"created"``).
           - ``overwrite=False``: skip if it already exists, otherwise create it.
+            Handles the check-then-put race: if another writer creates the
+            parameter between the existence check and our put, the status is
+            still ``"skipped"`` (not an error).
 
         All parameter names must start with ``/specforge/``; other names raise
         ``SSMError`` before any writes occur.
@@ -62,17 +67,39 @@ class SSMService:
         status: dict[str, str] = {}
         for name, value in agent_map.items():
             if overwrite:
+                existed = self._parameter_exists(name)
                 self.put_parameter(name, value, overwrite=True)
-                status[name] = "overwritten"
+                status[name] = "overwritten" if existed else "created"
                 continue
 
-            exists = self._parameter_exists(name)
-            if exists:
+            # Fast-path check to avoid a stray write on 99% of calls, but still
+            # handle the race if existence changes between check and put.
+            if self._parameter_exists(name):
                 status[name] = "skipped"
-            else:
-                self.put_parameter(name, value, overwrite=False)
-                status[name] = "created"
+                continue
+            created = self._try_create(name, value)
+            status[name] = "created" if created else "skipped"
         return status
+
+    def _try_create(self, name: str, value: str) -> bool:
+        """Create a new SecureString parameter.
+
+        Returns ``True`` if created, ``False`` if it already existed. Other
+        ``ClientError``s re-raise as :class:`SSMError`.
+        """
+        try:
+            self._client.put_parameter(
+                Name=name,
+                Value=value,
+                Type="SecureString",
+                Overwrite=False,
+            )
+            return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ParameterAlreadyExists":
+                return False
+            raise SSMError(f"Failed to create parameter {name!r}: {exc}") from exc
 
     def _parameter_exists(self, name: str) -> bool:
         try:
