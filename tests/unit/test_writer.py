@@ -249,3 +249,162 @@ def test_evaluation_summary_table_has_three_agent_rows():
     assert "| Quality |" in section
     assert "| Ambiguity |" in section
     assert "| Complexity |" in section
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 — Story-derived Markdown injection
+# ---------------------------------------------------------------------------
+
+
+def test_story_description_with_injected_headings_is_escaped():
+    # A malicious or accidentally-formatted description must not inject
+    # top-level headings that break the canonical 8-section layout.
+    story = JiraStory(
+        id="SPEC-42",
+        title="Build a webhook receiver",
+        description="# HACKED\n## Fake Section",
+        acceptance_criteria=["Given X, When Y, Then Z"],
+        story_points=3,
+    )
+    output = assemble_spec(story, _phase1_pass(), _phase2())
+
+    # Escaped forms present, raw injection NOT present at line start.
+    assert "\\# HACKED" in output
+    assert "\\## Fake Section" in output
+
+    # The exact 8 canonical ``## `` headings must appear, no more.
+    # We count ``\n## `` occurrences plus the one at the very start of the
+    # document (no leading newline there).
+    heading_occurrences = output.count("\n## ") + (
+        1 if output.startswith("## ") else 0
+    )
+    assert heading_occurrences == 8, (
+        f"expected exactly 8 ``## `` headings, got {heading_occurrences}"
+    )
+
+
+def test_story_title_with_leading_pipe_is_escaped():
+    story = JiraStory(
+        id="SPEC-42",
+        title="|col1|col2|",
+        description="Plain description.",
+        acceptance_criteria=["Given X"],
+        story_points=3,
+    )
+    output = assemble_spec(story, _phase1_pass(), _phase2())
+    # The rendered title line now carries an escape before the leading pipe.
+    assert "**Title:** \\|col1|col2|" in output
+
+
+def test_story_acceptance_criterion_with_leading_hash_is_escaped():
+    story = JiraStory(
+        id="SPEC-42",
+        title="Title",
+        description="Description.",
+        acceptance_criteria=["# Not a heading"],
+        story_points=3,
+    )
+    output = assemble_spec(story, _phase1_pass(), _phase2())
+    # Inside the Story section, the AC renders with the ``#`` escaped.
+    assert "\\# Not a heading" in output
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — Phase 2 body pollution (duplicate headings)
+# ---------------------------------------------------------------------------
+
+
+def test_phase2_duplicate_h2_heading_is_stripped():
+    phase2 = Phase2Result(
+        architecture="## Architecture\n\nBody here",
+        api_design="API design body text.",
+        edge_cases="Edge cases body text.",
+        testing_strategy="Testing strategy body text.",
+    )
+    output = assemble_spec(_story(), _phase1_pass(), phase2)
+    # Exactly one ``## Architecture`` in the whole document.
+    assert output.count("## Architecture") == 1
+    # Body content still present right after the writer-owned heading.
+    assert "## Architecture\n\nBody here" in output
+
+
+def test_phase2_duplicate_h1_heading_is_stripped():
+    phase2 = Phase2Result(
+        architecture="Architecture body.",
+        api_design="# API Design\n\nBody",
+        edge_cases="Edge cases body.",
+        testing_strategy="Testing body.",
+    )
+    output = assemble_spec(_story(), _phase1_pass(), phase2)
+    # No stray H1 in the rendered document.
+    assert "\n# API Design" not in output
+    # Writer still emits its ``## API Design``.
+    assert "## API Design\n\nBody" in output
+
+
+def test_phase2_without_duplicate_heading_is_unchanged():
+    phase2 = Phase2Result(
+        architecture="Architecture body.",
+        api_design="API design body.",
+        edge_cases="Body no heading",
+        testing_strategy="Testing body.",
+    )
+    output = assemble_spec(_story(), _phase1_pass(), phase2)
+    assert "## Edge Cases\n\nBody no heading" in output
+
+
+def test_phase2_duplicate_heading_case_insensitive():
+    phase2 = Phase2Result(
+        architecture="## architecture\n\nBody",
+        api_design="API design body.",
+        edge_cases="Edge cases body.",
+        testing_strategy="Testing body.",
+    )
+    output = assemble_spec(_story(), _phase1_pass(), phase2)
+    assert output.count("## architecture") == 0
+    assert output.count("## Architecture") == 1
+    assert "## Architecture\n\nBody" in output
+
+
+def test_phase2_duplicate_heading_with_trailing_whitespace_stripped():
+    phase2 = Phase2Result(
+        architecture="## Architecture  \n\nBody",
+        api_design="API design body.",
+        edge_cases="Edge cases body.",
+        testing_strategy="Testing body.",
+    )
+    output = assemble_spec(_story(), _phase1_pass(), phase2)
+    assert output.count("## Architecture") == 1
+    assert "## Architecture\n\nBody" in output
+
+
+# ---------------------------------------------------------------------------
+# Finding 3 — Whitespace edge cases in table rationale
+# ---------------------------------------------------------------------------
+
+
+def test_rationale_normalizes_crlf_and_unicode_line_separators():
+    phase1 = Phase1Result(
+        quality=AgentScore(
+            agent_name="quality",
+            score=8.0,
+            rationale="foo\r\nbar\u2028baz",
+            suggestions=[],
+        ),
+        ambiguity=_score("ambiguity", 7.5),
+        complexity=_score("complexity", 6.5),
+        composite_score=7.45,
+        passed_gate=True,
+    )
+    output = assemble_spec(_story(), phase1, _phase2())
+
+    # The rationale renders on a single logical table row.
+    assert "| Quality | 8.00 | foo bar baz |" in output
+
+    # No stray CR / LINE SEP / PARA SEP anywhere in the Evaluation Summary.
+    start = output.index("## Evaluation Summary")
+    end = output.index("## Architecture")
+    section = output[start:end]
+    assert "\r" not in section
+    assert "\u2028" not in section
+    assert "\u2029" not in section

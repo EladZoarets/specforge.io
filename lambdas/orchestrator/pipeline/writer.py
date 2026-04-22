@@ -24,6 +24,8 @@ gate-fail block that explains why Phase 2 was skipped and surfaces the top
 
 from __future__ import annotations
 
+import re
+
 from core.models import JiraStory, Phase1Result, Phase2Result
 
 # Canonical Definition of Done — writer-owned, not agent-generated. This
@@ -36,6 +38,66 @@ _DEFINITION_OF_DONE: tuple[str, ...] = (
     "Deployed to dev environment",
     "Acceptance criteria verified by PM",
 )
+
+# Line-ish separators we normalize to spaces inside table cells so rationale
+# text never breaks out of its row: CR/LF in any combination plus the two
+# Unicode line/paragraph separators that some LLM outputs emit.
+_TABLE_CELL_LINE_BREAKS = re.compile(r"\r\n|\r|\n|\u2028|\u2029")
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _escape_markdown_structural(text: str) -> str:
+    """Neutralize characters that can break top-level document structure.
+
+    - Leading ``#`` on any line is prefixed with ``\\`` so story-supplied
+      text can't inject new headings that shift the 8-section layout.
+    - Leading ``|`` on any line is prefixed with ``\\`` so story-supplied
+      text can't be mistaken for a Markdown table row.
+
+    Inline Markdown (bold, italic, inline code, mid-line ``#``/``|``) is
+    left untouched — stories should still render with reasonable formatting.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    escaped: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith("|"):
+            # Preserve the original leading whitespace, then escape the
+            # first structural character.
+            indent_len = len(line) - len(stripped)
+            escaped.append(line[:indent_len] + "\\" + stripped)
+        else:
+            escaped.append(line)
+    return "\n".join(escaped)
+
+
+def _strip_duplicate_heading(body: str, heading: str) -> str:
+    """Remove a leading ``## heading`` or ``# heading`` line from ``body``.
+
+    Phase 2 agents are prompted not to emit their own section heading, but
+    some models drift and prepend one anyway. When that happens, the writer
+    would stack two identical headings. Strip the duplicate (case-insensitive
+    match, trailing whitespace tolerated) and any blank lines that follow
+    before the real body content.
+    """
+    if not body:
+        return body
+    # Only strip if the leading non-whitespace line is the duplicate.
+    leading_ws_len = len(body) - len(body.lstrip("\n"))
+    rest = body[leading_ws_len:]
+    first_line, sep, remainder = rest.partition("\n")
+    normalized = first_line.strip().lower()
+    candidates = (
+        f"## {heading}".lower(),
+        f"# {heading}".lower(),
+    )
+    if normalized not in candidates:
+        return body
+    # Drop the heading line plus any immediately-following blank lines.
+    remainder = remainder.lstrip("\n") if sep else ""
+    return remainder
 
 
 def assemble_spec(
@@ -66,13 +128,30 @@ def assemble_spec(
             ]
         )
     else:
+        # Strip duplicate section headings the Phase 2 agents may have
+        # emitted despite the prompt telling them not to — otherwise the
+        # writer stacks ``## Architecture`` twice, etc.
         sections.extend(
             [
-                _wrap_section("Architecture", phase2.architecture),
-                _wrap_section("API Design", phase2.api_design),
+                _wrap_section(
+                    "Architecture",
+                    _strip_duplicate_heading(phase2.architecture, "Architecture"),
+                ),
+                _wrap_section(
+                    "API Design",
+                    _strip_duplicate_heading(phase2.api_design, "API Design"),
+                ),
                 _render_implementation_steps(story, phase1),
-                _wrap_section("Edge Cases", phase2.edge_cases),
-                _wrap_section("Testing Strategy", phase2.testing_strategy),
+                _wrap_section(
+                    "Edge Cases",
+                    _strip_duplicate_heading(phase2.edge_cases, "Edge Cases"),
+                ),
+                _wrap_section(
+                    "Testing Strategy",
+                    _strip_duplicate_heading(
+                        phase2.testing_strategy, "Testing Strategy"
+                    ),
+                ),
             ]
         )
 
@@ -91,17 +170,24 @@ def _wrap_section(heading: str, body: str) -> str:
 def _render_story(story: JiraStory) -> str:
     points = str(story.story_points) if story.story_points is not None else "unspecified"
 
+    # Neutralize story-derived text so an injected ``# HACKED`` or leading
+    # ``|`` can't break the 8-section layout / table rendering.
+    safe_id = _escape_markdown_structural(story.id)
+    safe_title = _escape_markdown_structural(story.title)
+    safe_description = _escape_markdown_structural(story.description)
+
     if story.acceptance_criteria:
         ac_lines = "\n".join(
-            f"{idx}. {ac}" for idx, ac in enumerate(story.acceptance_criteria, start=1)
+            f"{idx}. {_escape_markdown_structural(ac)}"
+            for idx, ac in enumerate(story.acceptance_criteria, start=1)
         )
     else:
         ac_lines = "_No acceptance criteria provided._"
 
     body = (
-        f"**ID:** {story.id}\n\n"
-        f"**Title:** {story.title}\n\n"
-        f"**Description:**\n\n{story.description}\n\n"
+        f"**ID:** {safe_id}\n\n"
+        f"**Title:** {safe_title}\n\n"
+        f"**Description:**\n\n{safe_description}\n\n"
         f"**Acceptance Criteria:**\n\n{ac_lines}\n\n"
         f"**Story Points:** {points}"
     )
@@ -120,9 +206,16 @@ def _render_evaluation_summary(phase1: Phase1Result) -> str:
         "| --- | --- | --- |",
     ]
     for label, agent_score in rows:
-        # Rationale is free-text from an LLM; strip pipes/newlines so we
-        # don't break the Markdown table layout.
-        rationale = agent_score.rationale.replace("|", "\\|").replace("\n", " ")
+        # Rationale is free-text from an LLM. Normalize every line-ish
+        # separator (LF, CR, CRLF, U+2028, U+2029) to a single space so the
+        # cell stays on one logical row, collapse whitespace runs, then
+        # strip edges and apply the structural escape (for stray leading
+        # ``#``/``|`` that survive normalization) plus the table-cell pipe
+        # escape.
+        rationale = _TABLE_CELL_LINE_BREAKS.sub(" ", agent_score.rationale)
+        rationale = _WHITESPACE_RUN.sub(" ", rationale).strip()
+        rationale = _escape_markdown_structural(rationale)
+        rationale = rationale.replace("|", "\\|")
         table_lines.append(
             f"| {label} | {agent_score.score:.2f} | {rationale} |"
         )
@@ -138,7 +231,7 @@ def _render_evaluation_summary(phase1: Phase1Result) -> str:
 def _render_implementation_steps(story: JiraStory, phase1: Phase1Result) -> str:
     if story.acceptance_criteria:
         step_lines = [
-            f"{idx}. {ac}"
+            f"{idx}. {_escape_markdown_structural(ac)}"
             for idx, ac in enumerate(story.acceptance_criteria, start=1)
         ]
     else:
@@ -146,6 +239,8 @@ def _render_implementation_steps(story: JiraStory, phase1: Phase1Result) -> str:
 
     # Merge Phase 1 suggestions across the three agents, dedupe while
     # preserving first-seen order, and surface them as follow-up bullets.
+    # Dedupe on the raw suggestion (so upstream duplicates are collapsed
+    # regardless of structural escape), then escape before rendering.
     suggestions: list[str] = []
     seen: set[str] = set()
     for agent_score in (phase1.quality, phase1.ambiguity, phase1.complexity):
@@ -156,7 +251,9 @@ def _render_implementation_steps(story: JiraStory, phase1: Phase1Result) -> str:
 
     body_parts = ["\n".join(step_lines)]
     if suggestions:
-        follow_up = "\n".join(f"- {s}" for s in suggestions)
+        follow_up = "\n".join(
+            f"- {_escape_markdown_structural(s)}" for s in suggestions
+        )
         body_parts.append("**Follow-ups from Phase 1 review:**\n\n" + follow_up)
 
     return _wrap_section("Implementation Steps", "\n\n".join(body_parts))
@@ -191,7 +288,7 @@ def _render_gate_fail_block(phase1: Phase1Result) -> str:
         lines.append("**Top suggestions from Phase 1:**")
         lines.append("")
         for s in suggestions:
-            lines.append(f"- {s}")
+            lines.append(f"- {_escape_markdown_structural(s)}")
 
     return "\n".join(lines)
 
