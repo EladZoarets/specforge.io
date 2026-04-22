@@ -5,6 +5,17 @@ import os
 
 from services.ssm_service import SSMService
 
+
+class PartialSSMConfig(Exception):
+    """Raised when SSM is reachable but returns incomplete/invalid config.
+
+    This is a hard error — callers should NOT fall back to env vars on this,
+    because SSM is the intended source of truth and partial config means an
+    operator made a mistake that deserves a loud 500 rather than silent
+    stale-env-var substitution.
+    """
+
+
 _REQUIRED_VARS = (
     "ANTHROPIC_API_KEY",
     "JIRA_BASE_URL",
@@ -69,18 +80,49 @@ def load_settings_from_ssm(ssm_service: SSMService) -> Settings:
     """Load Settings from SSM parameters under /specforge/.
 
     Fetches each required parameter via the given SSMService.
-    Raises SSMError on any fetch failure. Raises ValueError if
-    QUALITY_THRESHOLD is not a valid float.
+
+    Error semantics (important — callers branch on exception type):
+
+    * :class:`PartialSSMConfig` — SSM is reachable but the configuration is
+      incomplete or malformed (a parameter is missing, blank, or the
+      quality_threshold isn't parseable as a float). This is an operator-
+      facing error; the caller MUST NOT fall back to env vars, because
+      silent stale-env substitution would mask a real bug.
+    * :class:`~services.ssm_service.SSMError` — the underlying SSM service
+      is unreachable / denied / otherwise broken. The caller may choose to
+      fall back to env vars (used by local dev / pytest where no IAM role
+      is present).
+
+    The two exception types are deliberately non-overlapping so handler
+    init can branch cleanly.
     """
-    values: dict[str, str] = {
-        field: ssm_service.get_parameter(param_name)
-        for field, param_name in _SSM_PARAM_MAP.items()
-    }
+    values: dict[str, str] = {}
+    for field, param_name in _SSM_PARAM_MAP.items():
+        # ``get_parameter_if_exists`` returns ``None`` on ParameterNotFound
+        # and re-raises :class:`SSMError` on everything else (network /
+        # permission / client error). That's the split we want: "missing"
+        # → PartialSSMConfig (operator mistake), "broken" → SSMError
+        # (environment issue).
+        raw = ssm_service.get_parameter_if_exists(param_name)
+        if raw is None:
+            raise PartialSSMConfig(f"missing SSM parameter: {param_name}")
+        # Strip whitespace (copy-paste from the AWS console commonly leaves
+        # a trailing newline, which silently breaks HMAC and URL parsing).
+        stripped = raw.strip()
+        if not stripped:
+            raise PartialSSMConfig(
+                f"SSM parameter {param_name!r} is empty after strip"
+            )
+        values[field] = stripped
+
     threshold_raw = values["quality_threshold"]
     try:
         quality_threshold = float(threshold_raw)
     except ValueError as exc:
-        raise ValueError(
+        # Bad float is operator config error, not a reachability error —
+        # translate to PartialSSMConfig so the handler doesn't fall back to
+        # env vars silently.
+        raise PartialSSMConfig(
             f"SSM parameter {_SSM_PARAM_MAP['quality_threshold']!r} must be a "
             f"float, got {threshold_raw!r}"
         ) from exc

@@ -42,7 +42,12 @@ from agents.phase2.api_agent import ApiAgent
 from agents.phase2.architecture_agent import ArchitectureAgent
 from agents.phase2.edge_cases_agent import EdgeCasesAgent
 from agents.phase2.testing_agent import TestingAgent
-from core.config import Settings, load_settings, load_settings_from_ssm
+from core.config import (
+    PartialSSMConfig,
+    Settings,
+    load_settings,
+    load_settings_from_ssm,
+)
 from core.models import JiraStory, Phase1Result, WebhookPayload
 from core.webhook import (
     MAX_BODY_BYTES,
@@ -76,13 +81,27 @@ _INIT_ERROR: BaseException | None = None
 
 # Preferred path: load settings from SSM (production Lambda, where the IAM
 # role grants ssm:GetParameter on /specforge/* and no env vars are injected).
-# Fallback path: if SSMService init or fetch fails — e.g. in local dev and
-# pytest where boto3 has no credentials or the parameters aren't populated —
-# fall back to env-var loading. The env fallback is what keeps the existing
-# ``base_env`` fixture (and local ``make run``) working without changes.
+#
+# Two distinct failure modes, two distinct responses:
+#
+# * ``PartialSSMConfig`` — SSM is reachable, but the operator left a
+#   parameter missing/blank/unparseable. Hard fail. We specifically do NOT
+#   fall back to env vars here: stale env would mask the misconfiguration
+#   and hand the operator a silent-wrong-creds footgun. Set ``_INIT_ERROR``
+#   and serve 500s until the operator fixes SSM.
+# * Anything else (boto init, no creds, network, access denied, etc.) —
+#   SSM is genuinely unreachable. Fall back to env-var loading. This is
+#   what keeps the existing ``base_env`` fixture (and local ``make run``)
+#   working without changes.
 try:
     _SSM_SERVICE = SSMService()
     _SETTINGS = load_settings_from_ssm(_SSM_SERVICE)
+except PartialSSMConfig as _exc:
+    # SSM is reachable but misconfigured — refuse env fallback.
+    _INIT_ERROR = _exc
+    logger.exception(
+        "SSM config is partial/invalid — refusing env fallback: %s", _exc
+    )
 except BaseException as _ssm_exc:  # noqa: BLE001 — broad: SSM can fail many ways
     logger.info(
         "SSM settings load failed (%s); falling back to env vars", _ssm_exc
