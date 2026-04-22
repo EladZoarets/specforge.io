@@ -6,13 +6,16 @@ signature, parses the payload, runs Phase 1 → gate → Phase 2 → writer →
 S3 upload → Jira comment/attachment, and returns a JSON response.
 
 Cold-start pattern:
-  - ``Settings`` and the stateless services (``JiraService``, ``S3Service``)
-    that don't bind an event loop are constructed at module import time and
-    reused across warm invocations.
-  - ``httpx.AsyncClient`` and ``anthropic.AsyncAnthropic`` are constructed
-    lazily inside ``_run_pipeline`` (per-invocation) because they bind to
-    ``asyncio.get_running_loop()`` at construction; hoisting them to module
-    scope would wedge warm invocations on a closed loop.
+  - ``Settings`` and ``S3Service`` (stateless; boto3 client is thread-safe
+    and reusable) are constructed at module import time and reused across
+    warm invocations — this saves ~150 ms per warm call.
+  - ``JiraService``, ``httpx.AsyncClient`` and ``anthropic.AsyncAnthropic``
+    are constructed lazily inside ``_run_pipeline`` (per-invocation) because
+    they bind to ``asyncio.get_running_loop()`` at construction; hoisting
+    them to module scope would wedge warm invocations on a closed loop.
+  - The Anthropic client is managed via ``async with`` so its underlying
+    httpx client is closed on every path, avoiding FD leaks across warm
+    invocations.
   - If module init raises, we capture the exception in ``_INIT_ERROR`` and
     serve 500s from every invocation rather than crashing the function.
 
@@ -41,6 +44,7 @@ from agents.phase2.testing_agent import TestingAgent
 from core.config import Settings, load_settings
 from core.models import JiraStory, Phase1Result, WebhookPayload
 from core.webhook import (
+    _MAX_BODY_BYTES,
     WebhookAuthError,
     WebhookParseError,
     parse_webhook_body,
@@ -58,10 +62,15 @@ if not logger.handlers:
 
 # Populated at module import; re-used by every warm invocation.
 _SETTINGS: Settings | None = None
+# S3Service has no event-loop state — hoist the boto3 client construction
+# (~150 ms on cold start) out of the per-invocation path. JiraService, by
+# contrast, owns the httpx.AsyncClient and stays per-invocation.
+_S3_SERVICE: S3Service | None = None
 _INIT_ERROR: BaseException | None = None
 
 try:
     _SETTINGS = load_settings()
+    _S3_SERVICE = S3Service(_SETTINGS.s3_bucket)
 except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
     # Lambda doesn't hard-crash on import; handler surfaces it as 500.
     _INIT_ERROR = _exc
@@ -83,12 +92,28 @@ def _response(status: int, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_body(event: dict[str, Any]) -> bytes:
-    """Return the request body as raw bytes, honoring ``isBase64Encoded``."""
+    """Return the request body as raw bytes, honoring ``isBase64Encoded``.
+
+    Size-gates the *raw* input before any decoding so a huge base64 payload
+    can't OOM the Lambda via ``base64.b64decode`` before HMAC/parse run.
+    Raises ``WebhookParseError`` (→ HTTP 400) if the raw input exceeds the
+    cap. Base64 inflates ~33%, so the b64 cap is ``_MAX_BODY_BYTES * 2``
+    (conservative); raw bytes/str pass through at exactly ``_MAX_BODY_BYTES``.
+    """
     raw = event.get("body") or ""
     if event.get("isBase64Encoded"):
+        # Cap the *source* string before decoding: b64 expansion is ~4/3, so
+        # 2x is a safe upper bound that still admits any valid payload
+        # under the eventual _MAX_BODY_BYTES decoded limit.
+        if len(raw) > _MAX_BODY_BYTES * 2:
+            raise WebhookParseError("Body exceeds maximum size")
         return base64.b64decode(raw)
     if isinstance(raw, bytes):
+        if len(raw) > _MAX_BODY_BYTES:
+            raise WebhookParseError("Body exceeds maximum size")
         return raw
+    if len(raw) > _MAX_BODY_BYTES:
+        raise WebhookParseError("Body exceeds maximum size")
     return raw.encode("utf-8")
 
 
@@ -176,6 +201,9 @@ async def _run_pipeline(settings: Settings, payload: WebhookPayload) -> dict[str
 
     Creates the per-invocation async resources (Anthropic client, httpx
     client) inside this coroutine so they bind to the running event loop.
+    The Anthropic client is managed via ``async with`` so its underlying
+    httpx client is closed on every path, including exceptions — warm
+    invocations otherwise leak file descriptors.
     """
     # Lazy imports — the Anthropic SDK instantiates an httpx client in its
     # constructor, and we don't want to pay that cost (or event-loop bind)
@@ -185,72 +213,81 @@ async def _run_pipeline(settings: Settings, payload: WebhookPayload) -> dict[str
 
     story = _payload_to_story(payload)
 
-    anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    phase1_agents = {
-        "quality": QualityAgent(anthropic_client),
-        "ambiguity": AmbiguityAgent(anthropic_client),
-        "complexity": ComplexityAgent(anthropic_client),
-    }
+    # Module-level S3 service (init checks in ``lambda_handler`` guarantee
+    # this is non-None by the time we get here).
+    s3 = _S3_SERVICE
+    assert s3 is not None  # noqa: S101 — invariant enforced by handler entry
 
-    phase1 = await run_phase1(story, phase1_agents, settings.quality_threshold)
-
-    async with httpx.AsyncClient() as http_client:
-        jira = JiraService(
-            settings.jira_base_url,
-            settings.jira_user_email,
-            settings.jira_token,
-            client=http_client,
-        )
-
-        # Gate-fail path: post feedback comment and return without touching S3.
-        if not phase1.passed_gate:
-            await jira.post_comment(payload.issue_key, _gate_fail_comment(phase1))
-            logger.info(
-                "Gate-fail path complete for %s (composite=%.2f)",
-                payload.issue_key,
-                phase1.composite_score,
-            )
-            return _response(
-                200,
-                {
-                    "message": "gate_failed",
-                    "issue_key": payload.issue_key,
-                    "composite_score": phase1.composite_score,
-                },
-            )
-
-        # Gate-pass path: Phase 2 → writer → S3 → Jira comment + attachment.
-        phase2_agents = {
-            "architecture": ArchitectureAgent(anthropic_client),
-            "api": ApiAgent(anthropic_client),
-            "edge_cases": EdgeCasesAgent(anthropic_client),
-            "testing": TestingAgent(anthropic_client),
+    async with AsyncAnthropic(api_key=settings.anthropic_api_key) as anthropic_client:
+        phase1_agents = {
+            "quality": QualityAgent(anthropic_client),
+            "ambiguity": AmbiguityAgent(anthropic_client),
+            "complexity": ComplexityAgent(anthropic_client),
         }
-        phase2 = await run_phase2(
-            story, phase1, phase2_agents, settings.quality_threshold
-        )
 
-        spec_markdown = assemble_spec(story, phase1, phase2)
+        phase1 = await run_phase1(story, phase1_agents, settings.quality_threshold)
 
-        # S3 upload is sync (boto3); run in the default executor so we don't
-        # block the event loop on the PUT.
-        s3 = S3Service(settings.s3_bucket)
-        loop = asyncio.get_running_loop()
-        s3_key = await loop.run_in_executor(
-            None, s3.upload_spec, story.id, spec_markdown
-        )
-        presigned_url = await loop.run_in_executor(
-            None, s3.generate_presigned_url, s3_key
-        )
+        async with httpx.AsyncClient() as http_client:
+            jira = JiraService(
+                settings.jira_base_url,
+                settings.jira_user_email,
+                settings.jira_token,
+                client=http_client,
+            )
 
-        await jira.post_comment(
-            payload.issue_key, _gate_pass_comment(payload.issue_key, presigned_url)
-        )
-        await jira.attach_file(
-            payload.issue_key,
-            spec_markdown.encode("utf-8"),
-            f"{story.id}-SPEC.md",
-        )
+            # Gate-fail path: post feedback comment and return without
+            # touching S3.
+            if not phase1.passed_gate:
+                await jira.post_comment(
+                    payload.issue_key, _gate_fail_comment(phase1)
+                )
+                logger.info(
+                    "Gate-fail path complete for %s (composite=%.2f)",
+                    payload.issue_key,
+                    phase1.composite_score,
+                )
+                return _response(
+                    200,
+                    {
+                        "message": "gate_failed",
+                        "issue_key": payload.issue_key,
+                        "composite_score": phase1.composite_score,
+                    },
+                )
+
+            # Gate-pass path: Phase 2 → writer → S3 → Jira comment +
+            # attachment.
+            phase2_agents = {
+                "architecture": ArchitectureAgent(anthropic_client),
+                "api": ApiAgent(anthropic_client),
+                "edge_cases": EdgeCasesAgent(anthropic_client),
+                "testing": TestingAgent(anthropic_client),
+            }
+            phase2 = await run_phase2(
+                story, phase1, phase2_agents, settings.quality_threshold
+            )
+
+            spec_markdown = assemble_spec(story, phase1, phase2)
+
+            # S3 upload is sync (boto3); run in the default executor so we
+            # don't block the event loop on the PUT.
+            loop = asyncio.get_running_loop()
+            s3_key = await loop.run_in_executor(
+                None, s3.upload_spec, story.id, spec_markdown
+            )
+            presigned_url = await loop.run_in_executor(
+                None, s3.generate_presigned_url, s3_key
+            )
+
+            await jira.post_comment(
+                payload.issue_key,
+                _gate_pass_comment(payload.issue_key, presigned_url),
+            )
+            await jira.attach_file(
+                payload.issue_key,
+                spec_markdown.encode("utf-8"),
+                f"{story.id}-SPEC.md",
+            )
 
     logger.info(
         "Gate-pass path complete for %s (s3_key=%s)", payload.issue_key, s3_key
@@ -272,12 +309,18 @@ async def _run_pipeline(settings: Settings, payload: WebhookPayload) -> dict[str
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG001
     """API Gateway v2 entry point. Always returns a ``{statusCode, body}`` dict."""
-    if _INIT_ERROR is not None or _SETTINGS is None:
+    if _INIT_ERROR is not None or _SETTINGS is None or _S3_SERVICE is None:
         logger.error("Refusing invocation; module init failed: %s", _INIT_ERROR)
         return _response(500, {"error": "server_error"})
 
     try:
-        body_bytes = _extract_body(event)
+        # 0. Extract body, size-gated before any decode (400 on overflow)
+        try:
+            body_bytes = _extract_body(event)
+        except WebhookParseError as exc:
+            # Body too large — short-circuit before HMAC/parse run.
+            logger.info("Webhook body rejected at extract: %s", exc)
+            return _response(400, {"error": "bad_request", "detail": str(exc)})
         signature = _extract_signature(event)
 
         # 1. Validate signature (401)

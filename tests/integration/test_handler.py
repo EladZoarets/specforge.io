@@ -209,14 +209,16 @@ def test_gate_fail_posts_comment_and_skips_s3(handler_module):
     jira_instance.attach_file = AsyncMock(return_value={})
     jira_ctor = MagicMock(return_value=jira_instance)
 
-    s3_ctor = MagicMock()  # must never be called
+    # S3 is module-scoped; patch the instance and assert its methods are
+    # never touched on the gate-fail path.
+    s3_instance = MagicMock()
 
     with (
         q_patch,
         a_patch,
         c_patch,
         patch.object(handler_module, "JiraService", jira_ctor),
-        patch.object(handler_module, "S3Service", s3_ctor),
+        patch.object(handler_module, "_S3_SERVICE", s3_instance),
     ):
         resp = handler_module.lambda_handler(_event(_valid_body()), None)
 
@@ -233,7 +235,8 @@ def test_gate_fail_posts_comment_and_skips_s3(handler_module):
     assert f"{phase1.composite_score:.2f}" in comment_body  # composite score in body
     assert "Add acceptance criteria" in comment_body  # top suggestion echoed
     jira_instance.attach_file.assert_not_awaited()
-    s3_ctor.assert_not_called()
+    s3_instance.upload_spec.assert_not_called()
+    s3_instance.generate_presigned_url.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -252,12 +255,12 @@ def test_gate_pass_happy_path(handler_module):
     jira_instance.attach_file = AsyncMock(return_value={})
     jira_ctor = MagicMock(return_value=jira_instance)
 
+    # S3 service is now module-scoped; patch the instance directly.
     s3_instance = MagicMock()
     s3_instance.upload_spec = MagicMock(return_value="specs/SPEC-1/2026-04-22/SPEC.md")
     s3_instance.generate_presigned_url = MagicMock(
         return_value="https://s3.example.com/signed-url"
     )
-    s3_ctor = MagicMock(return_value=s3_instance)
 
     with (
         q_patch,
@@ -268,7 +271,7 @@ def test_gate_pass_happy_path(handler_module):
         edge_p,
         test_p,
         patch.object(handler_module, "JiraService", jira_ctor),
-        patch.object(handler_module, "S3Service", s3_ctor),
+        patch.object(handler_module, "_S3_SERVICE", s3_instance),
     ):
         resp = handler_module.lambda_handler(_event(_valid_body()), None)
 
@@ -369,7 +372,6 @@ def test_s3_upload_exception_returns_500(handler_module):
     s3_instance.upload_spec = MagicMock(
         side_effect=S3UploadError("b", "k", "InternalError", "put failed")
     )
-    s3_ctor = MagicMock(return_value=s3_instance)
 
     with (
         q_patch,
@@ -380,7 +382,7 @@ def test_s3_upload_exception_returns_500(handler_module):
         edge_p,
         test_p,
         patch.object(handler_module, "JiraService", jira_ctor),
-        patch.object(handler_module, "S3Service", s3_ctor),
+        patch.object(handler_module, "_S3_SERVICE", s3_instance),
     ):
         resp = handler_module.lambda_handler(_event(_valid_body()), None)
 
@@ -410,7 +412,6 @@ def test_jira_post_comment_exception_returns_500(handler_module):
     s3_instance = MagicMock()
     s3_instance.upload_spec = MagicMock(return_value="specs/SPEC-1/2026-04-22/SPEC.md")
     s3_instance.generate_presigned_url = MagicMock(return_value="https://s3.example/u")
-    s3_ctor = MagicMock(return_value=s3_instance)
 
     with (
         q_patch,
@@ -421,7 +422,7 @@ def test_jira_post_comment_exception_returns_500(handler_module):
         edge_p,
         test_p,
         patch.object(handler_module, "JiraService", jira_ctor),
-        patch.object(handler_module, "S3Service", s3_ctor),
+        patch.object(handler_module, "_S3_SERVICE", s3_instance),
     ):
         resp = handler_module.lambda_handler(_event(_valid_body()), None)
 
@@ -450,3 +451,170 @@ def test_module_init_missing_settings_returns_500(handler_module):
         resp = handler_module.lambda_handler(_event(_valid_body()), None)
     assert resp["statusCode"] == 500
     assert json.loads(resp["body"]) == {"error": "server_error"}
+
+
+# ---------------------------------------------------------------------------
+# 10-11. Oversized body → 400 before HMAC runs (Finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_base64_body_rejected_before_hmac(handler_module):
+    """A huge base64-encoded body must be rejected at _extract_body, before
+    any HMAC check runs — otherwise a malicious sender can OOM the Lambda
+    with ``base64.b64decode`` prior to the size check in parse_webhook_body.
+    """
+    from core.webhook import _MAX_BODY_BYTES
+
+    oversized = "A" * (2 * _MAX_BODY_BYTES + 1)
+    event = {
+        "body": oversized,
+        "headers": {"x-hub-signature-256": "sha256=deadbeef"},
+        "isBase64Encoded": True,
+    }
+
+    # Patch validate_signature so we can prove it was never invoked.
+    sig_mock = MagicMock()
+    with patch.object(handler_module, "validate_signature", sig_mock):
+        resp = handler_module.lambda_handler(event, None)
+
+    assert resp["statusCode"] == 400
+    body = json.loads(resp["body"])
+    assert body["error"] == "bad_request"
+    assert "maximum size" in body["detail"]
+    # Critical: HMAC must not have run on the oversized input.
+    sig_mock.assert_not_called()
+
+
+def test_oversized_raw_body_rejected(handler_module):
+    """Raw (non-b64) body over ``_MAX_BODY_BYTES`` also rejected → 400."""
+    from core.webhook import _MAX_BODY_BYTES
+
+    oversized = "X" * (_MAX_BODY_BYTES + 1)
+    event = {
+        "body": oversized,
+        "headers": {"x-hub-signature-256": "sha256=deadbeef"},
+        "isBase64Encoded": False,
+    }
+
+    sig_mock = MagicMock()
+    with patch.object(handler_module, "validate_signature", sig_mock):
+        resp = handler_module.lambda_handler(event, None)
+
+    assert resp["statusCode"] == 400
+    body = json.loads(resp["body"])
+    assert body["error"] == "bad_request"
+    assert "maximum size" in body["detail"]
+    sig_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 12. AsyncAnthropic client is closed on happy path (Finding 2)
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_client_closed_on_happy_path(handler_module):
+    """After a successful invocation, the AsyncAnthropic client's async
+    context manager must have exited (i.e. the underlying httpx client is
+    closed). Otherwise warm invocations leak file descriptors.
+    """
+    phase1 = _pass_phase1()
+    phase2 = _phase2_result()
+    q_patch, a_patch, c_patch = _patch_phase1_agents(handler_module, phase1)
+    arch_p, api_p, edge_p, test_p = _patch_phase2_agents(handler_module, phase2)
+
+    jira_instance = MagicMock()
+    jira_instance.post_comment = AsyncMock(return_value={})
+    jira_instance.attach_file = AsyncMock(return_value={})
+    jira_ctor = MagicMock(return_value=jira_instance)
+
+    s3_instance = MagicMock()
+    s3_instance.upload_spec = MagicMock(return_value="specs/SPEC-1/2026-04-22/SPEC.md")
+    s3_instance.generate_presigned_url = MagicMock(return_value="https://s3.example/u")
+
+    # Fake AsyncAnthropic whose async CM tracks __aenter__/__aexit__.
+    fake_anthropic = MagicMock()
+    fake_anthropic.__aenter__ = AsyncMock(return_value=fake_anthropic)
+    fake_anthropic.__aexit__ = AsyncMock(return_value=None)
+    anthropic_ctor = MagicMock(return_value=fake_anthropic)
+
+    with (
+        q_patch,
+        a_patch,
+        c_patch,
+        arch_p,
+        api_p,
+        edge_p,
+        test_p,
+        patch.object(handler_module, "JiraService", jira_ctor),
+        patch.object(handler_module, "_S3_SERVICE", s3_instance),
+        patch("anthropic.AsyncAnthropic", anthropic_ctor),
+    ):
+        resp = handler_module.lambda_handler(_event(_valid_body()), None)
+
+    assert resp["statusCode"] == 200
+    # Client was constructed, entered, and — critically — exited.
+    anthropic_ctor.assert_called_once()
+    fake_anthropic.__aenter__.assert_awaited_once()
+    fake_anthropic.__aexit__.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 13. S3Service is module-scoped and reused across invocations (Finding 3)
+# ---------------------------------------------------------------------------
+
+
+def test_s3_service_module_scoped_reused_across_invocations(base_env, s3_client):  # noqa: ARG001
+    """The S3Service instance is constructed once at module import and
+    reused across warm invocations. Construction cost (~150ms) must not
+    re-incur on every call.
+    """
+    # Ensure a fresh import so we can intercept the module-level S3Service
+    # construction below.
+    sys.modules.pop("handler", None)
+
+    s3_instance = MagicMock()
+    s3_instance.upload_spec = MagicMock(return_value="specs/SPEC-1/2026-04-22/SPEC.md")
+    s3_instance.generate_presigned_url = MagicMock(return_value="https://s3.example/u")
+
+    s3_ctor = MagicMock(return_value=s3_instance)
+
+    # Patch S3Service *before* import so the module-level construction uses
+    # our mock exactly once.
+    with patch("services.s3_service.S3Service", s3_ctor):
+        module = importlib.import_module("handler")
+    try:
+        phase1 = _pass_phase1()
+        phase2 = _phase2_result()
+        q_patch, a_patch, c_patch = _patch_phase1_agents(module, phase1)
+        arch_p, api_p, edge_p, test_p = _patch_phase2_agents(module, phase2)
+
+        jira_instance = MagicMock()
+        jira_instance.post_comment = AsyncMock(return_value={})
+        jira_instance.attach_file = AsyncMock(return_value={})
+        jira_ctor = MagicMock(return_value=jira_instance)
+
+        with (
+            q_patch,
+            a_patch,
+            c_patch,
+            arch_p,
+            api_p,
+            edge_p,
+            test_p,
+            patch.object(module, "JiraService", jira_ctor),
+        ):
+            # Two successive invocations — simulating warm re-entry.
+            resp1 = module.lambda_handler(_event(_valid_body()), None)
+            resp2 = module.lambda_handler(_event(_valid_body()), None)
+
+        assert resp1["statusCode"] == 200
+        assert resp2["statusCode"] == 200
+
+        # Critical: S3Service constructor called exactly once (at import),
+        # not per-invocation.
+        assert s3_ctor.call_count == 1
+
+        # The same instance handled both uploads.
+        assert s3_instance.upload_spec.call_count == 2
+    finally:
+        sys.modules.pop("handler", None)
