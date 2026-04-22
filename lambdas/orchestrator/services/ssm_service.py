@@ -34,3 +34,54 @@ class SSMService:
             )
         except ClientError as exc:
             raise SSMError(f"Failed to put parameter {name!r}: {exc}") from exc
+
+    def bootstrap_agent_ids(
+        self,
+        agent_map: dict[str, str],
+        *,
+        overwrite: bool = False,
+    ) -> dict[str, str]:
+        """Bootstrap SSM parameters idempotently.
+
+        For each (name, value) in ``agent_map``:
+          - ``overwrite=True``: always write the parameter.
+          - ``overwrite=False``: skip if it already exists, otherwise create it.
+
+        All parameter names must start with ``/specforge/``; other names raise
+        ``SSMError`` before any writes occur.
+
+        Returns a mapping ``{name: "created" | "skipped" | "overwritten"}``
+        describing what happened for each input.
+        """
+        invalid = [name for name in agent_map if not name.startswith("/specforge/")]
+        if invalid:
+            raise SSMError(
+                f"Invalid parameter name(s) (must start with '/specforge/'): {invalid!r}"
+            )
+
+        status: dict[str, str] = {}
+        for name, value in agent_map.items():
+            if overwrite:
+                self.put_parameter(name, value, overwrite=True)
+                status[name] = "overwritten"
+                continue
+
+            exists = self._parameter_exists(name)
+            if exists:
+                status[name] = "skipped"
+            else:
+                self.put_parameter(name, value, overwrite=False)
+                status[name] = "created"
+        return status
+
+    def _parameter_exists(self, name: str) -> bool:
+        try:
+            self._client.get_parameter(Name=name, WithDecryption=False)
+            return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ParameterNotFound":
+                return False
+            raise SSMError(
+                f"Failed to check existence of parameter {name!r}: {exc}"
+            ) from exc
