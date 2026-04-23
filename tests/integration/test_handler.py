@@ -728,7 +728,7 @@ def test_ssm_unavailable_falls_back_to_env(base_env, s3_client):  # noqa: ARG001
     error / network dead), that's a genuine reachability failure — fall
     back to env vars cleanly. ``_SETTINGS`` must be populated from env.
     """
-    class _BoomSSM(BaseException):
+    class _BoomSSM(Exception):
         pass
 
     ssm_ctor = MagicMock(side_effect=_BoomSSM("boto client init failed"))

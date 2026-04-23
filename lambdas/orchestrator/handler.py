@@ -102,14 +102,13 @@ except PartialSSMConfig as _exc:
     logger.exception(
         "SSM config is partial/invalid — refusing env fallback: %s", _exc
     )
-except BaseException as _ssm_exc:  # noqa: BLE001 — broad: SSM can fail many ways
+except Exception as _ssm_exc:  # noqa: BLE001 — SSM can fail many ways
     logger.info(
         "SSM settings load failed (%s); falling back to env vars", _ssm_exc
     )
     try:
         _SETTINGS = load_settings()
-    except BaseException as _exc:  # noqa: BLE001 — capture *everything* so the
-        # Lambda doesn't hard-crash on import; handler surfaces it as 500.
+    except Exception as _exc:  # noqa: BLE001 — capture init failures as 500
         _INIT_ERROR = _exc
         logger.exception("Module-level initialization failed: %s", _exc)
     else:
