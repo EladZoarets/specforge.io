@@ -1,7 +1,7 @@
 .PHONY: test lint deploy-dev deploy-prod bootstrap-ssm
 
 test:
-	pytest
+	uv run pytest
 
 lint:
 	ruff check lambdas/ tests/
