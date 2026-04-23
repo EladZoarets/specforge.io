@@ -213,3 +213,43 @@ def test_ssm_param_map_keys_match_settings_fields():
 
     settings_fields = {f.name for f in dataclasses.fields(Settings)}
     assert set(_SSM_PARAM_MAP.keys()) == settings_fields
+
+
+_SECRET_FIELDS = ("anthropic_api_key", "jira_token", "webhook_secret")
+
+
+def test_partial_ssm_config_errors_do_not_embed_secret_values():
+    """PartialSSMConfig error messages must never include raw values from
+    secret fields — guards against copy-paste of the threshold error pattern
+    (which legitimately embeds the raw threshold string) being applied to
+    credential-bearing fields, which would silently leak secrets to CloudWatch.
+
+    The current code only includes the threshold raw value in errors; this
+    test locks that invariant in so a future refactor can't accidentally
+    start including API keys or tokens.
+    """
+    # Provide valid values for all fields except quality_threshold
+    # (set to non-float to trigger PartialSSMConfig with an embedded value).
+    # Use distinctive sentinels for secret fields so we can detect leakage.
+    secret_sentinels = {
+        "/specforge/anthropic_api_key": "sk-ant-SUPERSECRET-APIKEY",
+        "/specforge/jira_api_token": "jira-VERYSECRET-token",
+        "/specforge/webhook_secret": "webhook-CLASSIFIED-secret",
+    }
+    values = dict(_SSM_VALUES)
+    for k, v in secret_sentinels.items():
+        values[k] = v
+    values["/specforge/quality_threshold"] = "not-a-float"
+
+    svc = _mock_ssm(values)
+    with pytest.raises(PartialSSMConfig) as exc_info:
+        load_settings_from_ssm(svc)
+
+    error_msg = str(exc_info.value)
+    # The threshold raw value is acceptable in the error (not a secret).
+    assert "not-a-float" in error_msg
+    # Secret field values must NEVER appear in error messages.
+    for sentinel in secret_sentinels.values():
+        assert sentinel not in error_msg, (
+            f"Secret value {sentinel!r} leaked into PartialSSMConfig error"
+        )
