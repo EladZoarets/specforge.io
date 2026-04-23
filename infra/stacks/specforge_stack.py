@@ -87,7 +87,15 @@ class SpecforgeStack(cdk.Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(
-                os.path.join(os.path.dirname(__file__), "../../lambdas/orchestrator")
+                os.path.join(os.path.dirname(__file__), "../../lambdas/orchestrator"),
+                bundling=cdk.BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements.txt -t /asset-output && cp -au . /asset-output",
+                    ],
+                ),
             ),
             timeout=cdk.Duration.seconds(300),
             memory_size=1024,
