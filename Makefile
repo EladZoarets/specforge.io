@@ -8,11 +8,11 @@ lint:
 	ruff format --check lambdas/ tests/
 
 deploy-dev:
-	cd infra && cdk deploy --context env=dev --require-approval never
+	cd infra && PATH=$(shell pwd)/.venv/bin:$$PATH cdk deploy --context env=dev --require-approval never
 
 deploy-prod:
-	cd infra && cdk deploy --context env=prod
+	cd infra && PATH=$(shell pwd)/.venv/bin:$$PATH cdk deploy --context env=prod
 
 bootstrap-ssm:
 	@echo "Writing SSM placeholder parameters for specforge..."
-	PYTHONPATH=lambdas/orchestrator:$$PYTHONPATH python scripts/bootstrap_ssm.py
+	PYTHONPATH=lambdas/orchestrator:$$PYTHONPATH uv run python scripts/bootstrap_ssm.py

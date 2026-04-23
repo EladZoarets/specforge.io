@@ -177,22 +177,44 @@ npx aws-cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
 
 ## Local development
 
+### Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/) if you don't have it:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Set rebase as the default git pull strategy (avoids divergent-branch errors):
+
+```bash
+git config --global pull.rebase true
+```
+
+### Setup & run
+
 ```bash
 # clone + enter the repo
 git clone <this-repo>
 cd specforge.io
 
-# install python deps (dev group includes pytest, moto, ruff, etc.)
+# install all python deps (dev group includes pytest, moto, ruff, etc.)
 uv sync
 
 # run unit + integration tests (moto stubs AWS; no real calls)
 make test
+# equivalently: uv run pytest
+
+# skip the CDK infra test if aws-cdk-lib is not installed
+uv run pytest --ignore=tests/unit/test_infra_stack.py
 
 # lint & format check
 make lint
 ```
 
 Tests use `moto` for S3/SSM and `respx` for HTTP mocks; nothing hits real AWS or Anthropic.
+
+> **Note:** `make test` calls `uv run pytest` internally, so there is no need to activate the virtual environment manually.
 
 ### Project structure conventions
 
