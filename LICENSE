@@ -1,0 +1,129 @@
+PROPRIETARY SOFTWARE LICENSE
+
+Copyright (c) 2026 Elad Zoarets. All Rights Reserved.
+
+================================================================================
+
+IMPORTANT — READ CAREFULLY. THIS IS A LEGAL AGREEMENT.
+
+This software and its associated source code, documentation, build artifacts,
+configuration, infrastructure definitions, and any other files contained in
+this repository (collectively, the "Software") are the exclusive property of
+Elad Zoarets (the "Licensor"). The Software is protected by copyright law and
+international treaty provisions.
+
+NO LICENSE IS GRANTED BY DEFAULT.
+
+No right or license, express or implied, is granted to any person or entity
+to use, copy, reproduce, modify, merge, publish, distribute, sublicense,
+train machine-learning models on, embed, host, execute, deploy, display,
+create derivative works from, reverse engineer, or sell any portion of the
+Software, in whole or in part, in any form or by any means, without the
+prior, specific, written permission of the Licensor.
+
+The mere act of viewing, cloning, forking, or otherwise obtaining a copy of
+this repository does NOT constitute a grant of any rights beyond the limited
+technical access required to read it in the context it was published.
+
+================================================================================
+
+1. PERMISSION REQUIRED
+
+   Any use of the Software — including but not limited to the purposes listed
+   above — requires a separate, written license or permission from the
+   Licensor. Requests for permission must be directed to:
+
+       Elad Zoarets
+       eladzoarets@gmail.com
+
+   Permission, if granted, will be limited to the scope, duration, fields of
+   use, and terms specified in the written grant. No other rights are
+   implied or transferred.
+
+2. PROHIBITED WITHOUT PERMISSION
+
+   Without a separate written grant from the Licensor, you MAY NOT:
+
+     (a) copy, reproduce, or redistribute the Software, in source or object
+         form, in whole or in part;
+     (b) modify, adapt, translate, or create derivative works of the
+         Software;
+     (c) execute, run, deploy, or host the Software, whether internally,
+         publicly, or as part of any product or service;
+     (d) use the Software, or any portion of it, as input or training data
+         for any machine-learning, artificial-intelligence, or similar
+         system;
+     (e) incorporate the Software, or any portion of it, into any other
+         work;
+     (f) sell, lease, rent, sublicense, or otherwise commercially exploit
+         the Software;
+     (g) remove or alter any copyright, trademark, or other proprietary
+         notices contained in the Software;
+     (h) use the names, trademarks, or branding of the Licensor to endorse
+         or promote products derived from the Software.
+
+3. NO CONTRIBUTION LICENSE
+
+   Submitting a pull request, issue, patch, or any other contribution to this
+   repository does not grant you any rights in the Software, and does not
+   obligate the Licensor to accept, use, or respond to the contribution.
+   Any contribution accepted by the Licensor is, at the Licensor's option,
+   assigned to the Licensor or licensed to the Licensor under terms at least
+   as permissive as this License.
+
+4. TERMINATION
+
+   Any permission granted under this License terminates automatically and
+   without notice if you breach any term of this License or of the separate
+   written grant under which you obtained permission. Upon termination, you
+   must immediately cease all use of the Software and destroy all copies in
+   your possession or control.
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+   NON-INFRINGEMENT. THE LICENSOR MAKES NO REPRESENTATION THAT THE SOFTWARE
+   IS FREE OF DEFECTS OR SUITABLE FOR ANY USE.
+
+6. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+   LICENSOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+   EXEMPLARY, CONSEQUENTIAL, OR PUNITIVE DAMAGES (INCLUDING, WITHOUT
+   LIMITATION, LOST PROFITS, LOST DATA, OR BUSINESS INTERRUPTION) ARISING
+   OUT OF OR RELATED TO THE SOFTWARE OR THIS LICENSE, WHETHER IN CONTRACT,
+   TORT, STRICT LIABILITY, OR OTHERWISE, EVEN IF ADVISED OF THE POSSIBILITY
+   OF SUCH DAMAGES.
+
+7. GOVERNING LAW
+
+   This License shall be governed by and construed in accordance with the
+   laws applicable at the Licensor's principal place of residence, without
+   regard to its conflict-of-laws principles. Any dispute arising under or
+   in connection with this License shall be subject to the exclusive
+   jurisdiction of the courts located in that jurisdiction.
+
+8. SEVERABILITY
+
+   If any provision of this License is held to be unenforceable or invalid,
+   such provision shall be changed and interpreted to accomplish the
+   objectives of such provision to the greatest extent possible under
+   applicable law, and the remaining provisions shall continue in full force
+   and effect.
+
+9. ENTIRE AGREEMENT
+
+   This License, together with any separate written grant of permission from
+   the Licensor, constitutes the entire agreement between you and the
+   Licensor concerning the Software and supersedes all prior or
+   contemporaneous communications, representations, or agreements, whether
+   oral or written.
+
+================================================================================
+
+To request permission to use this Software, contact:
+    Elad Zoarets <eladzoarets@gmail.com>
+
+All rights not expressly granted are reserved by the Licensor.
