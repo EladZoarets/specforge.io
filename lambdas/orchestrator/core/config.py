@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from services.ssm_service import SSMService
+
+from services.ssm_service import SSMError  # noqa: E402 — after TYPE_CHECKING block
 
 _REQUIRED_VARS = (
     "ANTHROPIC_API_KEY",
@@ -11,6 +17,19 @@ _REQUIRED_VARS = (
     "S3_BUCKET",
     "WEBHOOK_SECRET",
 )
+
+_SSM_PARAM_MAP: dict[str, str] = {
+    "anthropic_api_key": "/specforge/anthropic_api_key",
+    "jira_base_url": "/specforge/jira_url",
+    "jira_token": "/specforge/jira_token",
+    "jira_user_email": "/specforge/jira_user_email",
+    "s3_bucket": "/specforge/s3_bucket",
+    "webhook_secret": "/specforge/webhook_secret",
+}
+
+
+class PartialSSMConfig(Exception):
+    """Required SSM parameters are absent or malformed — operator error, not transient."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,3 +56,23 @@ def load_settings() -> Settings:
         s3_bucket=os.environ["S3_BUCKET"],
         webhook_secret=os.environ["WEBHOOK_SECRET"],
     )
+
+
+def load_settings_from_ssm(ssm: SSMService) -> Settings:
+    values: dict[str, str] = {}
+    for field, param_name in _SSM_PARAM_MAP.items():
+        try:
+            values[field] = ssm.get_parameter(param_name)
+        except SSMError as exc:
+            cause = exc.__cause__
+            code = (
+                cause.response.get("Error", {}).get("Code", "")
+                if cause is not None and hasattr(cause, "response")
+                else ""
+            )
+            if code == "ParameterNotFound":
+                raise PartialSSMConfig(
+                    f"Required SSM parameter not found: {param_name!r}"
+                ) from exc
+            raise
+    return Settings(**values)
